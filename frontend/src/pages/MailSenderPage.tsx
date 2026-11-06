@@ -438,6 +438,16 @@ export function MailSenderPage() {
                   value={smtpHost}
                   onChange={(e) => setSmtpHost(e.target.value)}
                 />
+                {smtpHost.includes('@') ? (
+                  <p className="mt-1 text-[11px] font-medium text-red-600 dark:text-red-400">
+                    That is an email address. Enter the mail server instead — for Gmail use{' '}
+                    <code>smtp.gmail.com</code>.
+                  </p>
+                ) : (
+                  <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                    Server name only, e.g. <code>smtp.gmail.com</code> — not your email address.
+                  </p>
+                )}
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">

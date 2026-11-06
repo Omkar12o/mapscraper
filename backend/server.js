@@ -3443,7 +3443,8 @@ async function runMailJob(jobId) {
           jobId
         );
       } catch (err) {
-        const reason = String(err.message || 'send failed').slice(0, 500);
+        const rawReason = String(err.message || 'send failed').slice(0, 500);
+        const reason = mailer.friendlyError(err).slice(0, 500);
         db.prepare(
           "UPDATE mail_sender_messages SET status='failed', subject=?, message=?, error=? WHERE id=?"
         ).run(subject, text, reason, msg.id);
@@ -3453,8 +3454,8 @@ async function runMailJob(jobId) {
         );
 
         // Auth/connection problems affect every remaining message, so pause.
-        const fatal = /EAUTH|ECONNECTION|ETIMEDOUT|ESOCKET|EDNS|not configured|invalid login|535/i.test(
-          reason
+        const fatal = /EAUTH|ECONNECTION|ETIMEDOUT|ESOCKET|EDNS|EAI_FAIL|ENOTFOUND|getaddrinfo|not configured|invalid login|535/i.test(
+          `${err && err.code ? err.code : ''} ${rawReason}`
         );
         if (fatal) {
           db.prepare(
@@ -3530,7 +3531,7 @@ app.post('/api/mailsender/test', async (req, res) => {
     });
     res.json({ sent: true, to, messageId: sent.messageId });
   } catch (err) {
-    res.status(502).json({ error: err.message });
+    res.status(502).json({ error: mailer.friendlyError(err) });
   }
 });
 

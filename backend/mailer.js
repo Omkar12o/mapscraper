@@ -17,6 +17,47 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const HOST_RE =
+  /^(localhost|(?:\d{1,3}\.){3}\d{1,3}|[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+)$/i;
+
+// Used to suggest the right host when someone pastes an email by mistake.
+const PROVIDER_HOSTS = {
+  'gmail.com': 'smtp.gmail.com',
+  'googlemail.com': 'smtp.gmail.com',
+  'outlook.com': 'smtp-mail.outlook.com',
+  'hotmail.com': 'smtp-mail.outlook.com',
+  'live.com': 'smtp-mail.outlook.com',
+  'msn.com': 'smtp-mail.outlook.com',
+  'yahoo.com': 'smtp.mail.yahoo.com',
+  'yahoo.in': 'smtp.mail.yahoo.com',
+  'zoho.com': 'smtp.zoho.com',
+  'zohomail.in': 'smtp.zoho.in',
+};
+
+/**
+ * Normalize a host field: drop scheme, path and an inline ":port".
+ * @param {string} value
+ */
+function normalizeHost(value) {
+  let host = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^[a-z][a-z0-9+.-]*:\/\//i, '')
+    .replace(/\/.*$/, '');
+  const withPort = host.match(/^([^:]+):(\d{1,5})$/);
+  if (withPort) host = withPort[1];
+  return host;
+}
+
+function isValidHost(host) {
+  return HOST_RE.test(String(host || ''));
+}
+
+function hostSuggestions(host) {
+  const email = host.match(/@([^\s@]+)$/);
+  const domain = email ? email[1].toLowerCase() : '';
+  return PROVIDER_HOSTS[domain] || '';
+}
 
 let cached = null; // { key, transporter }
 let configFile = null; // absolute path to mail-config.json
@@ -71,6 +112,16 @@ function extractAddress(value) {
   return looseEmail(value);
 }
 
+function writeFileConfig(payload) {
+  fs.mkdirSync(path.dirname(configFile), { recursive: true });
+  fs.writeFileSync(configFile, JSON.stringify(payload, null, 2), { mode: 0o600 });
+  try {
+    fs.chmodSync(configFile, 0o600);
+  } catch (_) {
+    /* Windows may ignore POSIX modes */
+  }
+}
+
 function loadFileConfig() {
   if (!configFile) {
     fileConfig = {};
@@ -81,6 +132,21 @@ function loadFileConfig() {
     fileConfig = parsed && typeof parsed === 'object' ? parsed : {};
   } catch (_) {
     fileConfig = {};
+  }
+
+  // Self-heal a common mistake: an email address pasted into the Host field.
+  const badHost = String(fileConfig.host || '').trim();
+  if (badHost && badHost.includes('@')) {
+    const suggestion = hostSuggestions(badHost);
+    if (suggestion) {
+      fileConfig.host = suggestion;
+      try {
+        writeFileConfig(fileConfig);
+      } catch (_) {
+        /* best effort */
+      }
+      console.log(`mailer: replaced invalid SMTP host "${badHost}" with "${suggestion}"`);
+    }
   }
 }
 
@@ -107,7 +173,7 @@ function pick(envName, fileKey) {
  * Never includes the password in API responses (see getSafeConfig).
  */
 export function getConfig() {
-  const host = pick('SMTP_HOST', 'host');
+  const host = normalizeHost(pick('SMTP_HOST', 'host'));
   const port = parseInt(pick('SMTP_PORT', 'port') || '587', 10) || 587;
   const secureValue = pick('SMTP_SECURE', 'secure');
   const secure =
@@ -120,7 +186,12 @@ export function getConfig() {
   const replyTo = pick('MAIL_REPLY_TO', 'replyTo');
   const unsubscribeUrl = pick('MAIL_UNSUBSCRIBE_URL', 'unsubscribeUrl');
 
-  const configured = !!(host && extractAddress(from) && (!user || pass));
+  const configured = !!(
+    host &&
+    isValidHost(host) &&
+    extractAddress(from) &&
+    (!user || pass)
+  );
 
   return { host, port, secure, user, pass, from, replyTo, unsubscribeUrl, configured };
 }
@@ -141,6 +212,7 @@ export function getSafeConfig() {
     unsubscribeUrl: cfg.unsubscribeUrl || null,
     hasAuth: !!cfg.user,
     hasPassword: !!cfg.pass,
+    hostValid: isValidHost(cfg.host),
     source: usingEnv ? 'env' : usingFile ? 'file' : 'none',
     configFile: configFile || null,
   };
@@ -166,10 +238,7 @@ export function saveConfig(input = {}) {
 
   const current = getConfig();
 
-  const host = String(input.host ?? current.host ?? '')
-    .trim()
-    .replace(/^https?:\/\//i, '')
-    .replace(/\/+$/, '');
+  const host = normalizeHost(input.host ?? current.host ?? '');
   const port = Math.min(65535, Math.max(1, parseInt(input.port ?? current.port, 10) || 587));
   const secure =
     typeof input.secure === 'boolean' ? input.secure : current.secure || port === 465;
@@ -195,6 +264,19 @@ export function saveConfig(input = {}) {
   const effectivePass = env('SMTP_PASS') || filePass;
 
   if (!host) throw new Error('SMTP host is required (for example smtp.gmail.com).');
+  if (host.includes('@')) {
+    const suggestion = hostSuggestions(host);
+    throw new Error(
+      `The Host field contains an email address ("${host.slice(0, 80)}"). ` +
+        `Enter the mail server instead${suggestion ? `: ${suggestion}` : ', for example smtp.gmail.com'}.`
+    );
+  }
+  if (!isValidHost(host)) {
+    throw new Error(
+      `"${host.slice(0, 80)}" is not a valid SMTP host. ` +
+        'Use a server name like smtp.gmail.com or smtp-relay.brevo.com.'
+    );
+  }
   if (!from) {
     const typed = String(fromInput || user || '').trim();
     throw new Error(
@@ -224,13 +306,7 @@ export function saveConfig(input = {}) {
     updatedAt: new Date().toISOString(),
   };
 
-  fs.mkdirSync(path.dirname(configFile), { recursive: true });
-  fs.writeFileSync(configFile, JSON.stringify(payload, null, 2), { mode: 0o600 });
-  try {
-    fs.chmodSync(configFile, 0o600);
-  } catch (_) {
-    /* Windows may ignore POSIX modes */
-  }
+  writeFileConfig(payload);
 
   fileConfig = payload;
   reset();
@@ -362,4 +438,41 @@ export async function sendMail({ to, subject, text }) {
 /** Drop the cached transporter (used after a config change). */
 export function reset() {
   cached = null;
+}
+
+/**
+ * Turn low-level SMTP/socket errors into messages a user can act on.
+ * @param {any} err
+ * @returns {string}
+ */
+export function friendlyError(err) {
+  const code = String((err && err.code) || '');
+  const message = String((err && err.message) || 'Unknown error');
+  const text = `${code} ${message}`;
+
+  if (/EAI_FAIL|ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(text)) {
+    return (
+      'Could not resolve the SMTP host. The Host field must be a mail server name ' +
+      '(for example smtp.gmail.com), not an email address.'
+    );
+  }
+  if (/EAUTH|535|invalid login|username and password not accepted|badcredentials/i.test(text)) {
+    return (
+      'SMTP login failed. Check the username and password. Gmail requires an ' +
+      'App Password (2-Step Verification), not your normal password.'
+    );
+  }
+  if (/ETLS|wrong version number|ssl routines|eproto/i.test(text)) {
+    return (
+      'TLS mismatch. Try port 587 with "Use implicit TLS" off, ' +
+      'or port 465 with it on.'
+    );
+  }
+  if (/ECONNECTION|ETIMEDOUT|ESOCKET|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH/i.test(text)) {
+    return (
+      'Could not connect to the SMTP server. Check the host and port ' +
+      '(usually 587, or 465 with implicit TLS).'
+    );
+  }
+  return message;
 }

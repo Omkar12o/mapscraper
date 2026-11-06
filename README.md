@@ -192,6 +192,15 @@ Docker or headless deployments.
 | Opt-out list | on | Skipped by every campaign |
 | Auto opt-out footer | on | Added to every email |
 
+**Troubleshooting:**
+
+| Error | Fix |
+|---|---|
+| `getaddrinfo EAI_FAIL` / `ENOTFOUND` | The Host field contains an email address. Use the server name (e.g. `smtp.gmail.com`). |
+| `EAUTH` / `535` / "invalid login" | Wrong username/password. For Gmail use a 16-character **App Password**, not your normal password. |
+| `ETIMEDOUT` / `ECONNECTION` | Wrong host or port. Try `587` with implicit TLS off, or `465` with it on. |
+| TLS / SSL error | Flip the "Use implicit TLS" checkbox to match the port. |
+
 > **Deliverability:** cold email is heavily filtered. Use a separate sending domain,
 > warm it up, and configure SPF, DKIM and DMARC. Typical safe cold-outreach volume is
 > **20–50 emails/day per mailbox** — provider hard limits are higher, but inbox
