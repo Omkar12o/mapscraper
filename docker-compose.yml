@@ -1,0 +1,58 @@
+version: "3.8"
+
+services:
+  # Google Maps Scraper (REST API / Web UI) — runs in web mode on port 8080.
+  scraper:
+    image: gosom/google-maps-scraper:latest
+    container_name: lead-finder-scraper
+    ports:
+      - "8080:8080"
+    volumes:
+      - gmapsdata:/gmapsdata
+    command: ["-web", "-data-folder", "/gmapsdata"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # Lead Finder backend (Node/Express) — talks to scraper REST API, owns SQLite.
+  backend:
+    build: ./backend
+    container_name: lead-finder-backend
+    ports:
+      - "5000:5000"
+    environment:
+      - PORT=5000
+      - SCRAPER_URL=http://scraper:8080
+      - SCRAPER_MAX_TIME_SECONDS=300
+      - SCRAPER_DEPTH=10
+      - SCRAPER_RADIUS=10000
+      - MAX_RETRIES=1
+      - POLL_INTERVAL_MS=5000
+      - CONCURRENCY=3
+      - DB_PATH=/data/leadfinder.db
+    volumes:
+      - leadfinder-data:/data
+    depends_on:
+      scraper:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Lead Finder frontend (React + Vite) — served via nginx on port 5173.
+  frontend:
+    build: ./frontend
+    container_name: lead-finder-frontend
+    ports:
+      - "5173:80"
+    environment:
+      - VITE_API_BASE=http://localhost:5000/api
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  gmapsdata:
+  leadfinder-data:

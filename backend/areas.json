@@ -1,0 +1,7 @@
+{
+  "Mumbai": ["Andheri", "Bandra", "Dadar", "Borivali", "Kurla", "Powai", "Malad", "Goregaon", "Vile Parle", "Juhu", "Worli", "Colaba", "Churchgate", "Byculla", "Mazgaon", "Marine Lines"],
+  "Delhi": ["Connaught Place", "Karol Bagh", "Chandni Chowk", "Dwarka", "Rohini", "Saket", "Lajpat Nagar", "Janakpuri", "Pitampura", "Mayur Vihar"],
+  "Bengaluru": ["Koramangala", "Indiranagar", "Whitefield", "Jayanagar", "Malleshwaram", "HSR Layout", "BTM Layout", "Marathahalli", "Electronic City", "Rajajinagar"],
+  "Pune": ["Kothrud", "Hadapsar", "Shivajinagar", "Viman Nagar", "Baner", "Wakad", "Hinjewadi", "Pimpri", "Chinchwad", "Kharadi", "Aundh", "Katraj", "Warje", "Camp", "Deccan", "Swargate", "Kondhwa", "Wanowrie", "Magarpatta", "Yerwada", "Pimple Saudagar", "Koregaon Park", "Fergusson College Road", "Aundh", "Bavdhan", "Pashan", "Sinhgad Road", "Nigdi", "Akurdi", "Bhosari", "Chakan", "Talegaon", "Lonavala"],
+  "Hyderabad": ["Banjara Hills", "Jubilee Hills", "Hitech City", "Madhapur", "Gachibowli", "Kukatpally", "Secunderabad", "Ameerpet", "Begumpet", "Kondapur"]
+}
