@@ -220,6 +220,14 @@ export const api = {
     if (opts.limit) params.set('limit', String(opts.limit));
     return request(`/whatsapp/recipients?${params.toString()}`);
   },
+  sendWhatsAppTest: (body: {
+    phone: string;
+    template: string;
+    name?: string;
+    city?: string;
+    state?: string;
+  }): Promise<{ sent: boolean; phone: string; messageId: string | null; text: string }> =>
+    request('/whatsapp/test', { method: 'POST', body: JSON.stringify(body) }),
   startWhatsAppCampaign: (body: {
     template: string;
     state?: string;

@@ -21,6 +21,7 @@ backend/data/wa-session/
 # Logs
 *.log
 server_*.txt
+frontend_*.txt
 
 # Temporary debug scripts and exports
 backend/test_*.cjs

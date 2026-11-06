@@ -3063,6 +3063,37 @@ app.get('/api/whatsapp/recipients', (req, res) => {
   });
 });
 
+// Send a single real message to verify the setup. This is intentionally not
+// part of a campaign, so it does not touch wa_jobs/wa_messages or the daily cap.
+app.post('/api/whatsapp/test', async (req, res) => {
+  if (!wa.isConnected()) {
+    return res.status(409).json({ error: 'WhatsApp is not connected. Scan the QR code first.' });
+  }
+
+  const body = req.body || {};
+  const phone = wa.normalizePhone(body.phone);
+  if (!phone || phone.length < 10) {
+    return res.status(400).json({ error: 'Enter a valid phone number with country code.' });
+  }
+
+  const template = String(body.template || '').trim();
+  if (!template) return res.status(400).json({ error: 'Test message is empty' });
+
+  const text = renderWaTemplate(template, {
+    name: String(body.name || '').trim() || 'there',
+    city: String(body.city || '').trim(),
+    state: String(body.state || '').trim(),
+    phone,
+  });
+
+  try {
+    const sent = await wa.sendText(phone, text);
+    res.json({ sent: true, phone, messageId: sent.id, jid: sent.jid, text });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
 app.post('/api/whatsapp/send', (req, res) => {
   const body = req.body || {};
   const template = String(body.template || '').trim();

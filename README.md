@@ -117,6 +117,9 @@ The **WhatsApp Sender** page bulk-messages your saved leads over WhatsApp Web us
    The credentials are saved in `backend/data/wa-session/`, so you only scan once.
 3. Pick a state (and optionally a city), write a message template, then preview
    the recipients and start the campaign.
+4. Before your first campaign, use the **Test message** card to send one real
+   message to your own number. Test sends do not count toward the daily cap or
+   campaign history.
 
 **Template variables:** `{name}`, `{city}`, `{state}`, `{phone}`.
 

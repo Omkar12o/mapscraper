@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
+  FlaskConical,
   LogOut,
   MessageCircle,
   Play,
@@ -88,6 +89,14 @@ export function WhatsAppPage() {
 
   const [newPhone, setNewPhone] = useState('');
   const [newReason, setNewReason] = useState('');
+
+  const [testPhone, setTestPhone] = useState('');
+  const [testName, setTestName] = useState('');
+  const [testMessage, setTestMessage] = useState(
+    'Test message from Lead Finder. If you received this, WhatsApp sending is working.'
+  );
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<any>(null);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -194,6 +203,43 @@ export function WhatsAppPage() {
       add({ type: 'error', title: 'Logout failed', message: err.message });
     } finally {
       setBusy(false);
+    }
+  };
+
+  const handleSendTest = async () => {
+    if (!connected) {
+      add({ type: 'warning', title: 'Not connected', message: 'Scan the QR code first.' });
+      return;
+    }
+    if (!testPhone.trim()) {
+      add({ type: 'warning', title: 'No number', message: 'Enter the phone number to test with.' });
+      return;
+    }
+    if (!testMessage.trim()) {
+      add({ type: 'warning', title: 'Empty message', message: 'Write a test message first.' });
+      return;
+    }
+
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const res = await api.sendWhatsAppTest({
+        phone: testPhone.trim(),
+        template: testMessage,
+        name: testName.trim(),
+      });
+      setTestResult({ ok: true, ...res });
+      add({
+        type: 'success',
+        title: 'Test message sent',
+        message: `Check +${res.phone} on your phone.`,
+      });
+      await refreshStatus();
+    } catch (err: any) {
+      setTestResult({ ok: false, error: err.message });
+      add({ type: 'error', title: 'Test failed', message: err.message });
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -368,6 +414,92 @@ export function WhatsAppPage() {
         {connected && (
           <div className="mt-4 flex items-center gap-2 text-sm text-green-700 dark:text-green-400">
             <CheckCircle2 className="w-4 h-4" /> Ready to send.
+          </div>
+        )}
+      </Card>
+
+      {/* Test message */}
+      <Card>
+        <div className="flex items-start gap-3">
+          <div className="w-11 h-11 rounded-xl bg-emerald-50 dark:bg-emerald-900/30 flex items-center justify-center">
+            <FlaskConical className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+          </div>
+          <div>
+            <h3 className="font-semibold text-slate-900 dark:text-white">Test message</h3>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              Send one real WhatsApp message to a number you control before starting a campaign.
+              Test sends do not count toward the daily cap or campaign history.
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div>
+            <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
+              Phone number
+            </label>
+            <Input
+              placeholder="+91XXXXXXXXXX"
+              value={testPhone}
+              onChange={(e) => setTestPhone(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
+              Name (optional, replaces {'{name}'})
+            </label>
+            <Input
+              placeholder="Your name"
+              value={testName}
+              onChange={(e) => setTestName(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="mt-4">
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="block text-xs font-medium text-slate-600 dark:text-slate-400">
+              Test message
+            </label>
+            <Button variant="ghost" size="sm" onClick={() => setTestMessage(template)}>
+              Use campaign template
+            </Button>
+          </div>
+          <textarea
+            value={testMessage}
+            onChange={(e) => setTestMessage(e.target.value)}
+            rows={3}
+            className="block w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition-colors placeholder-slate-400 focus:border-brand-500 focus:ring-2 focus:ring-brand-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:placeholder-slate-500"
+          />
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <Button onClick={handleSendTest} loading={testing} disabled={!connected}>
+            <Send className="w-4 h-4" /> Send test message
+          </Button>
+          {!connected && (
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              Connect WhatsApp to run the test.
+            </span>
+          )}
+        </div>
+
+        {testResult && (
+          <div
+            className={`mt-4 rounded-xl border p-3 text-sm ${
+              testResult.ok
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-800/60 dark:bg-emerald-900/20 dark:text-emerald-300'
+                : 'border-red-200 bg-red-50 text-red-800 dark:border-red-800/60 dark:bg-red-900/20 dark:text-red-300'
+            }`}
+          >
+            {testResult.ok ? (
+              <p>
+                Sent to <span className="font-semibold">+{testResult.phone}</span>. Open WhatsApp on
+                that phone to confirm it arrived.
+              </p>
+            ) : (
+              <p>Test failed: {testResult.error}</p>
+            )}
           </div>
         )}
       </Card>
