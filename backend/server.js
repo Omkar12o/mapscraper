@@ -55,6 +55,10 @@ app.use(express.json({ limit: '1mb' }));
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 
+// SMTP settings saved from the UI live next to the SQLite database
+// (backend/data locally, /data in Docker) and are gitignored.
+mailer.configure(path.dirname(DB_PATH));
+
 // ---------- keyword variants ----------
 const KEYWORD_VARIANTS = {
   ngo: ['NGO', 'charitable trust', 'foundation', 'welfare society', 'social organization', 'orphanage', 'non profit organization'],
@@ -3487,13 +3491,31 @@ async function runMailJob(jobId) {
   }
 }
 
-app.get('/api/mailsender/status', (_req, res) => {
-  res.json({
+function mailSenderStatus() {
+  return {
     ...mailer.getSafeConfig(),
     todaySent: mailSentToday(),
     defaultDelaySeconds: MAIL_DEFAULT_DELAY,
     defaultDailyCap: MAIL_DEFAULT_CAP,
-  });
+  };
+}
+
+app.get('/api/mailsender/status', (_req, res) => {
+  res.json(mailSenderStatus());
+});
+
+app.post('/api/mailsender/config', (req, res) => {
+  try {
+    mailer.saveConfig(req.body || {});
+    res.json(mailSenderStatus());
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/mailsender/config', (_req, res) => {
+  mailer.clearConfig();
+  res.json(mailSenderStatus());
 });
 
 app.post('/api/mailsender/test', async (req, res) => {

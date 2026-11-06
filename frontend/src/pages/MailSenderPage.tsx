@@ -12,6 +12,7 @@ import {
   Play,
   RefreshCw,
   Send,
+  Settings,
   ShieldOff,
   Square,
   Trash2,
@@ -80,6 +81,18 @@ export function MailSenderPage() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<any>(null);
 
+  const [showSettings, setShowSettings] = useState(false);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [smtpHost, setSmtpHost] = useState('');
+  const [smtpPort, setSmtpPort] = useState(587);
+  const [smtpSecure, setSmtpSecure] = useState(false);
+  const [smtpUser, setSmtpUser] = useState('');
+  const [smtpPass, setSmtpPass] = useState('');
+  const [smtpFrom, setSmtpFrom] = useState('');
+  const [smtpReplyTo, setSmtpReplyTo] = useState('');
+  const [smtpUnsub, setSmtpUnsub] = useState('');
+
   const [newEmail, setNewEmail] = useState('');
   const [newReason, setNewReason] = useState('');
 
@@ -144,6 +157,18 @@ export function MailSenderPage() {
   }, [status?.defaultDelaySeconds, status?.defaultDailyCap]);
 
   useEffect(() => {
+    if (!status || settingsLoaded) return;
+    setSmtpHost(status.host || '');
+    setSmtpPort(status.port || 587);
+    setSmtpSecure(!!status.secure);
+    setSmtpUser('');
+    setSmtpFrom(status.from || '');
+    setSmtpReplyTo(status.replyTo || '');
+    setSmtpUnsub(status.unsubscribeUrl || '');
+    setSettingsLoaded(true);
+  }, [status, settingsLoaded]);
+
+  useEffect(() => {
     if (!formState) {
       setCities([]);
       return;
@@ -186,6 +211,49 @@ export function MailSenderPage() {
       add({ type: 'error', title: 'Test failed', message: err.message });
     } finally {
       setTesting(false);
+    }
+  };
+
+  const handleSaveSettings = async () => {
+    setSavingSettings(true);
+    try {
+      const res = await api.saveMailSenderConfig({
+        host: smtpHost,
+        port: Number(smtpPort) || 587,
+        secure: smtpSecure,
+        user: smtpUser,
+        pass: smtpPass,
+        from: smtpFrom,
+        replyTo: smtpReplyTo,
+        unsubscribeUrl: smtpUnsub,
+      });
+      setStatus(res);
+      setSmtpPass('');
+      setSettingsLoaded(false);
+      add({
+        type: 'success',
+        title: 'SMTP settings saved',
+        message: 'Now use “Send test email” to confirm the login.',
+      });
+    } catch (err: any) {
+      add({ type: 'error', title: 'Could not save', message: err.message });
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  const handleClearSettings = async () => {
+    if (!window.confirm('Remove the saved SMTP settings? Environment variables are not affected.')) {
+      return;
+    }
+    try {
+      const res = await api.clearMailSenderConfig();
+      setStatus(res);
+      setSmtpPass('');
+      setSettingsLoaded(false);
+      add({ type: 'success', title: 'Saved settings removed' });
+    } catch (err: any) {
+      add({ type: 'error', title: 'Could not remove', message: err.message });
     }
   };
 
@@ -331,8 +399,8 @@ export function MailSenderPage() {
                 {configured
                   ? `Sending as ${status?.from} via ${status?.host}:${status?.port} • ${
                       status?.todaySent ?? 0
-                    } sent today`
-                  : 'Add SMTP settings to backend/.env, then restart the backend.'}
+                    } sent today${status?.source === 'env' ? ' (environment variables)' : ''}`
+                  : 'Enter your SMTP details below, save, then send a test email.'}
               </p>
             </div>
           </div>
@@ -341,23 +409,127 @@ export function MailSenderPage() {
           </Button>
         </div>
 
-        {!configured && (
-          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800/40">
-            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-              backend/.env
-            </p>
-            <pre className="mt-2 overflow-x-auto text-xs leading-6 text-slate-700 dark:text-slate-300">
-{`SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_SECURE=false
-SMTP_USER=you@gmail.com
-SMTP_PASS=your-app-password
-MAIL_FROM=Lead Finder <you@gmail.com>
-MAIL_UNSUBSCRIBE_URL=https://your-site.com/unsubscribe`}
-            </pre>
-            <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => setShowSettings((v) => !v)}>
+            <Settings className="w-4 h-4" />{' '}
+            {showSettings ? 'Hide settings' : configured ? 'Edit settings' : 'Configure SMTP'}
+          </Button>
+          {status?.source === 'file' && (
+            <Button variant="ghost" size="sm" onClick={handleClearSettings}>
+              <Trash2 className="w-4 h-4" /> Remove saved settings
+            </Button>
+          )}
+          {status?.source === 'env' && (
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              Environment variables override saved settings.
+            </span>
+          )}
+        </div>
+
+        {(showSettings || !configured) && (
+          <div className="mt-4 rounded-xl border border-slate-200 p-4 dark:border-slate-700">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
+                  SMTP host
+                </label>
+                <Input
+                  placeholder="smtp.gmail.com"
+                  value={smtpHost}
+                  onChange={(e) => setSmtpHost(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
+                  Port
+                </label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={smtpPort}
+                  onChange={(e) => setSmtpPort(parseInt(e.target.value || '587', 10))}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
+                  Username
+                </label>
+                <Input
+                  placeholder={status?.hasAuth ? 'Saved — leave blank to keep' : 'you@gmail.com'}
+                  value={smtpUser}
+                  onChange={(e) => setSmtpUser(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
+                  Password / app password
+                </label>
+                <Input
+                  type="password"
+                  placeholder={
+                    status?.hasPassword ? 'Saved — leave blank to keep' : '16-character app password'
+                  }
+                  value={smtpPass}
+                  onChange={(e) => setSmtpPass(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
+                  From address
+                </label>
+                <Input
+                  placeholder="Lead Finder <you@gmail.com>"
+                  value={smtpFrom}
+                  onChange={(e) => setSmtpFrom(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
+                  Reply-To (optional)
+                </label>
+                <Input
+                  placeholder="you@example.com"
+                  value={smtpReplyTo}
+                  onChange={(e) => setSmtpReplyTo(e.target.value)}
+                />
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
+                  Unsubscribe URL (optional)
+                </label>
+                <Input
+                  placeholder="https://your-site.com/unsubscribe"
+                  value={smtpUnsub}
+                  onChange={(e) => setSmtpUnsub(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <label className="mt-3 flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
+              <input
+                type="checkbox"
+                checked={smtpSecure}
+                onChange={(e) => setSmtpSecure(e.target.checked)}
+                className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+              />
+              Use implicit TLS (usually port 465)
+            </label>
+
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <Button onClick={handleSaveSettings} loading={savingSettings}>
+                <Settings className="w-4 h-4" /> Save settings
+              </Button>
+              <span className="text-xs text-slate-500 dark:text-slate-400">
+                Saved locally to <code>backend/data/mail-config.json</code>; the password is never
+                returned to the browser.
+              </span>
+            </div>
+
+            <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
               Gmail needs an App Password (2-Step Verification). Brevo, Resend, SendGrid, Mailgun
-              and Amazon SES also work through SMTP.
+              and Amazon SES also work through SMTP. You can also set these values in{' '}
+              <code>backend/.env</code> and restart.
             </p>
           </div>
         )}

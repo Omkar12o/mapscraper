@@ -256,6 +256,19 @@ export const api = {
   getMailSenderStatus: (): Promise<any> => request('/mailsender/status'),
   testMailSender: (to: string): Promise<{ sent: boolean; to: string; messageId: string }> =>
     request('/mailsender/test', { method: 'POST', body: JSON.stringify({ to }) }),
+  saveMailSenderConfig: (body: {
+    host: string;
+    port: number;
+    secure: boolean;
+    user?: string;
+    pass?: string;
+    from: string;
+    replyTo?: string;
+    unsubscribeUrl?: string;
+  }): Promise<any> =>
+    request('/mailsender/config', { method: 'POST', body: JSON.stringify(body) }),
+  clearMailSenderConfig: (): Promise<any> =>
+    request('/mailsender/config', { method: 'DELETE' }),
   previewMailRecipients: (opts: { state?: string; city?: string; limit?: number }) => {
     const params = new URLSearchParams();
     if (opts.state) params.set('state', opts.state);

@@ -146,20 +146,35 @@ the server restarts.
 
 The **Mail Sender** page emails the addresses found by **Mail Finder** through your
 own SMTP account (Gmail/Workspace, Brevo, Resend, SendGrid, Mailgun, Amazon SES, …).
-It is disabled until you set the SMTP variables.
+It is disabled until you configure SMTP.
+
+### Configure SMTP in the app (recommended)
+
+1. Open **http://localhost:5173 → Mail Sender**.
+2. Click **Configure SMTP** and fill in host, port, username, password and From address.
+3. Click **Save settings**, then **Send test email** to confirm the login.
+4. No restart is needed — the settings take effect immediately.
+
+- **Gmail:** use an [App Password](https://myaccount.google.com/apppasswords)
+  (`smtp.gmail.com`, port `587`, implicit TLS off).
+- **Brevo / Resend / SendGrid / Mailgun / SES:** use their SMTP host and API key
+  as the password.
+- Add an **Unsubscribe URL** to include a one-click `List-Unsubscribe` header.
+- Settings are stored in `backend/data/mail-config.json` (mode `0600`, gitignored).
+  The password is never returned to the browser. **Remove saved settings** deletes it.
+
+### Configure SMTP with environment variables (optional)
+
+Environment variables take priority over settings saved from the UI — useful for
+Docker or headless deployments.
 
 1. Copy the Mail Sender block from `backend/.env.example` into `backend/.env`.
 2. Fill in `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` and `MAIL_FROM`.
-   - **Gmail:** use an [App Password](https://myaccount.google.com/apppasswords)
-     (`SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=587`, `SMTP_SECURE=false`).
-   - **Brevo / Resend / SendGrid / Mailgun / SES:** use their SMTP host and API key
-     as the password.
-3. Set `MAIL_UNSUBSCRIBE_URL` to your unsubscribe page so a one-click
-   `List-Unsubscribe` header is added automatically.
-4. Restart the backend, then use **Test email** on the page to confirm it works.
+3. Restart the backend. The page shows `(environment variables)` as the source.
 
 > Running with Docker? Put the same `SMTP_*` / `MAIL_*` variables in a `.env` file at
 > the repository root — `docker-compose.yml` passes them to the backend container.
+> You can still configure SMTP from the page; it is saved inside the `/data` volume.
 
 **Template variables:** `{name}`, `{business}`, `{city}`, `{state}`, `{email}`
 (subject supports `{name}`, `{business}`, `{city}`).
@@ -209,6 +224,10 @@ in the queue.
 | MAIL_UNSUBSCRIBE_URL | — | Adds one-click `List-Unsubscribe` header + footer line |
 | MAIL_DELAY_SECONDS | 45 | Default delay between emails |
 | MAIL_DAILY_CAP | 50 | Default daily email cap |
+
+> SMTP variables are optional: the same settings can be saved from the Mail Sender
+> page into `backend/data/mail-config.json`. When both exist, environment variables
+> win.
 
 Rate/concurrency limits: each scraper job runs with `exit-on-inactivity 3m`, a depth of 10, and a 10 km radius. Jobs run one-at-a-time per city with retries, so the scraper is not overwhelmed.
 
