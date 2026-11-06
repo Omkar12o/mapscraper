@@ -36,7 +36,7 @@ export function Shell({ children, page, onPageChange }: ShellProps) {
 
   return (
     <ToastProvider>
-      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 overflow-x-hidden relative">
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 relative">
         {/* Top bar — full width, sits above everything */}
         <Topbar
           onToggleSidebar={() => setCollapsed((c) => !c)}
