@@ -247,8 +247,23 @@ export function saveConfig(input = {}) {
       ? current.user
       : String(input.user).trim() || current.user;
   const fromInput = input.from === undefined ? '' : String(input.from).trim();
-  // Blank From is fine when the username is an email address.
-  const from = normalizeFrom(fromInput || (looseEmail(user) ? user : ''));
+
+  // Accept a bare display name like "Omkar" and pair it with the username
+  // email, e.g. "Omkar <you@gmail.com>". A blank From falls back to the
+  // username when that is an email address.
+  let from = normalizeFrom(fromInput);
+  if (!from && fromInput) {
+    const userEmail = looseEmail(user);
+    const displayName = fromInput
+      .replace(/[<>"\r\n]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 80);
+    if (userEmail && displayName && !displayName.includes('@')) {
+      from = `${displayName} <${userEmail}>`;
+    }
+  }
+  if (!from) from = normalizeFrom(looseEmail(user) ? user : '');
   const replyTo =
     input.replyTo === undefined
       ? current.replyTo
@@ -281,7 +296,7 @@ export function saveConfig(input = {}) {
     const typed = String(fromInput || user || '').trim();
     throw new Error(
       `From address is not valid${typed ? ` ("${typed.slice(0, 80)}")` : ''}. ` +
-        'Use a real email such as "you@gmail.com" or "Your Name <you@gmail.com>".'
+        'Enter your email, e.g. "you@gmail.com" or "Your Name <you@gmail.com>".'
     );
   }
   if (replyTo && !extractAddress(replyTo)) {
@@ -292,7 +307,14 @@ export function saveConfig(input = {}) {
   if (unsubscribeUrl && !/^https?:\/\//i.test(unsubscribeUrl)) {
     throw new Error('Unsubscribe URL must start with http:// or https://.');
   }
-  if (user && !effectivePass) throw new Error('SMTP password (or app password) is required.');
+  if (user && !effectivePass) {
+    const hasSavedPass = !!String(fileConfig.pass || '').trim() || !!env('SMTP_PASS');
+    throw new Error(
+      hasSavedPass
+        ? 'Enter the SMTP password for this username (changing the username needs its password).'
+        : 'SMTP password (or app password) is required — none is saved yet.'
+    );
+  }
 
   const payload = {
     host,

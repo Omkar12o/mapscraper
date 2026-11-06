@@ -243,7 +243,11 @@ export function MailSenderPage() {
   };
 
   const handleClearSettings = async () => {
-    if (!window.confirm('Remove the saved SMTP settings? Environment variables are not affected.')) {
+    if (
+      !window.confirm(
+        'Remove the saved SMTP settings? You will need to re-enter the password. Environment variables are not affected.'
+      )
+    ) {
       return;
     }
     try {
@@ -494,8 +498,9 @@ export function MailSenderPage() {
                   onChange={(e) => setSmtpFrom(e.target.value)}
                 />
                 <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
-                  Leave blank to use the username. Both <code>you@gmail.com</code> and{' '}
-                  <code>Your Name &lt;you@gmail.com&gt;</code> work.
+                  Sender address — <code>Your Name &lt;you@gmail.com&gt;</code> or just{' '}
+                  <code>you@gmail.com</code>. A name alone (e.g. <code>Omkar</code>) is paired with
+                  the username email.
                 </p>
               </div>
               <div>

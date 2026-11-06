@@ -152,8 +152,9 @@ It is disabled until you configure SMTP.
 
 1. Open **http://localhost:5173 → Mail Sender**.
 2. Click **Configure SMTP** and fill in host, port, username, password and From address.
-   The From field accepts `you@gmail.com` or `Your Name <you@gmail.com>`, and can be
-   left blank when the username is an email address.
+   The From field accepts `you@gmail.com`, `Your Name <you@gmail.com>`, or just a
+   name like `Your Name` (paired with the username email). It can also be left blank
+   when the username is an email address.
 3. Click **Save settings**, then **Send test email** to confirm the login.
 4. No restart is needed — the settings take effect immediately.
 
