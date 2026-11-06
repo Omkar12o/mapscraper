@@ -8,9 +8,9 @@ ENV PORT=5000 \
     MAX_RETRIES=1 \
     POLL_INTERVAL_MS=5000 \
     DB_PATH=/data/leadfinder.db
-COPY package.json ./
-RUN npm install --omit=dev
-COPY server.js cities.json ./
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+COPY server.js providers.cjs cities.json areas.json cityCoords.json ./
 RUN mkdir -p /data
 EXPOSE 5000
 CMD ["node", "server.js"]

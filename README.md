@@ -51,6 +51,38 @@ Stop with:
 docker compose down
 ```
 
+## Run without Docker (local dev)
+
+You still need the **scraper on port 8080** — without it the UI loads but every search fails.
+
+```bash
+# 1. Start the scraper (pick one)
+docker run -p 8080:8080 gosom/google-maps-scraper -web -data-folder /gmapsdata
+#    ...or use the local binary:
+#    google-maps-scraper.exe -web -addr :8080 -data-folder webdata
+
+# 2. Backend (port 5000)
+cd backend
+npm install
+node server.js
+
+# 3. Frontend (port 5173, proxies /api to :5000)
+cd frontend
+npm install
+npm run dev
+```
+
+Then open **http://localhost:5173**.
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Failed to load states. Is the backend running on port 5000?` | Backend is not running | Start `backend` with `node server.js` |
+| Search starts then all cities fail (`fetch failed`) | Scraper on `:8080` is not running | Start the scraper container/binary (see above) |
+| `A search is already running` (409) | Only one search at a time is allowed | Stop the running search, or use **Clear stuck jobs** on the History page |
+| Address already in use on `:5000` / `:8080` / `:5173` | Old process still running | Kill the old process, then start again |
+
 ## How search works
 
 1. You enter a niche and pick an Indian state (all states + UTs included).
@@ -98,7 +130,10 @@ lead-finder/
 ├── docker-compose.yml          # starts scraper + backend + frontend
 ├── backend/                    # Node/Express API
 │   ├── server.js               # backend: fan-out, poll, clean, SQLite history
+│   ├── providers.cjs           # multi-provider adapters (serper, serpapi, ...)
 │   ├── cities.json             # all Indian states/UTs + major cities
+│   ├── areas.json              # city -> areas mapping
+│   ├── cityCoords.json         # city -> coordinates (provider search)
 │   ├── package.json
 │   └── Dockerfile
 └── frontend/                   # React + Vite + TypeScript
@@ -108,11 +143,14 @@ lead-finder/
     │   └── main.tsx
     ├── package.json
     ├── vite.config.ts
+    ├── nginx.conf              # serves the build + proxies /api to backend
     └── Dockerfile
 ```
 
 ## Notes
 
+- Search requires the scraper service (`:8080`). The repo does **not** vendor the scraper binary — Docker Compose pulls it, or you run it separately.
+- The SQLite database is created automatically on first start; it is intentionally **not** committed.
 - Results take at least ~3 minutes to appear (the scraper's minimum configured runtime per job).
 - Large states with many cities may take a while; the progress panel shows live status.
 - For production use behind a proxy, add proxies to the scraper via `SCRAPER_URL` job config or the scraper's proxy options to avoid blocking.
