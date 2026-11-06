@@ -4,6 +4,8 @@ import Database from 'better-sqlite3';
 import { parse } from 'csv-parse/sync';
 import { createRequire } from 'module';
 import ExcelJS from 'exceljs';
+import path from 'node:path';
+import * as wa from './whatsapp.js';
 
 const { Workbook } = ExcelJS;
 
@@ -233,6 +235,48 @@ try { db.exec('ALTER TABLE mail_jobs ADD COLUMN businesses_with_email INTEGER DE
 try { db.exec('ALTER TABLE mail_jobs ADD COLUMN pages_crawled INTEGER DEFAULT 0'); } catch (_) {}
 try { db.exec('ALTER TABLE mail_jobs ADD COLUMN emails_total INTEGER DEFAULT 0'); } catch (_) {}
 try { db.exec('ALTER TABLE mail_jobs ADD COLUMN source TEXT'); } catch (_) {}
+
+// WhatsApp bulk sender tables
+{
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS wa_jobs (
+      id TEXT PRIMARY KEY,
+      template TEXT NOT NULL,
+      delay_seconds INTEGER DEFAULT 30,
+      daily_cap INTEGER DEFAULT 100,
+      total INTEGER DEFAULT 0,
+      sent INTEGER DEFAULT 0,
+      failed INTEGER DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'running',
+      error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS wa_messages (
+      id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL,
+      name TEXT,
+      phone TEXT NOT NULL,
+      city TEXT,
+      state TEXT,
+      message TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      error TEXT,
+      wa_message_id TEXT,
+      sent_at TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (job_id) REFERENCES wa_jobs(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_wa_messages_job ON wa_messages(job_id);
+    CREATE INDEX IF NOT EXISTS idx_wa_messages_status ON wa_messages(status);
+    CREATE INDEX IF NOT EXISTS idx_wa_messages_phone ON wa_messages(phone);
+    CREATE TABLE IF NOT EXISTS wa_blacklist (
+      phone TEXT PRIMARY KEY,
+      reason TEXT,
+      created_at TEXT NOT NULL
+    );
+  `);
+}
 
 // Backfill dedupe keys, drop duplicates left by older versions, then enforce
 // uniqueness per run. This keeps results clean even when the same business is
@@ -2812,6 +2856,347 @@ app.get('/api/leads/export', async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="${fileName}.csv"`);
     res.send('\uFEFF' + lines.join('\n'));
   }
+});
+
+/* ================================================================== */
+/* WhatsApp bulk sender (Baileys)                                      */
+/* ================================================================== */
+
+const WA_SESSION_DIR = path.join(path.dirname(DB_PATH), 'wa-session');
+wa.configure(WA_SESSION_DIR);
+
+// Any message left mid-send by a restart goes back in the queue.
+try { db.prepare("UPDATE wa_messages SET status='pending' WHERE status='sending'").run(); } catch (_) {}
+try {
+  db.prepare("UPDATE wa_jobs SET status='paused', error='Server restarted - press Resume', updated_at=? WHERE status='running'").run(nowIso());
+} catch (_) {}
+
+function renderWaTemplate(template, row) {
+  return String(template || '')
+    .replace(/\{name\}/gi, row.name || 'there')
+    .replace(/\{city\}/gi, row.city || '')
+    .replace(/\{state\}/gi, row.state || '')
+    .replace(/\{phone\}/gi, row.phone || '');
+}
+
+function waTodayStartIso() {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString();
+}
+
+function waSentToday() {
+  return db.prepare("SELECT COUNT(*) AS c FROM wa_messages WHERE status='sent' AND sent_at >= ?").get(waTodayStartIso()).c;
+}
+
+function waBlacklistSet() {
+  return new Set(db.prepare('SELECT phone FROM wa_blacklist').all().map((r) => wa.normalizePhone(r.phone)));
+}
+
+function waBuildRecipients({ state, city, limit } = {}) {
+  const where = ["phone IS NOT NULL", "phone <> ''"];
+  const params = [];
+  if (state) {
+    where.push('state = ?');
+    params.push(state);
+  }
+  if (city) {
+    where.push('LOWER(city) = LOWER(?)');
+    params.push(city);
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT phone, MAX(name) AS name, MAX(city) AS city, MAX(state) AS state
+         FROM results
+        WHERE ${where.join(' AND ')}
+        GROUP BY phone
+        ORDER BY MAX(created_at) DESC`
+    )
+    .all(...params);
+
+  const blacklist = waBlacklistSet();
+  const already = new Set(
+    db
+      .prepare("SELECT DISTINCT phone FROM wa_messages WHERE status IN ('sent','pending','sending')")
+      .all()
+      .map((r) => wa.normalizePhone(r.phone))
+  );
+
+  const seen = new Set();
+  const out = [];
+  for (const row of rows) {
+    const phone = wa.normalizePhone(row.phone);
+    if (!phone || phone.length < 10) continue;
+    if (blacklist.has(phone) || already.has(phone) || seen.has(phone)) continue;
+    seen.add(phone);
+    out.push({ phone, name: row.name || '', city: row.city || '', state: row.state || '' });
+    if (limit && out.length >= limit) break;
+  }
+  return out;
+}
+
+function countActiveWaJob() {
+  return db
+    .prepare("SELECT id FROM wa_jobs WHERE status IN ('running','paused') ORDER BY created_at DESC LIMIT 1")
+    .get();
+}
+
+const runningWaJobs = new Set();
+
+async function runWaJob(jobId) {
+  if (runningWaJobs.has(jobId)) return;
+  runningWaJobs.add(jobId);
+  try {
+    for (;;) {
+      const job = db.prepare('SELECT * FROM wa_jobs WHERE id=?').get(jobId);
+      if (!job || job.status !== 'running') break;
+
+      if (!wa.isConnected()) {
+        db.prepare("UPDATE wa_jobs SET status='paused', error=?, updated_at=? WHERE id=?").run(
+          'WhatsApp disconnected',
+          nowIso(),
+          jobId
+        );
+        break;
+      }
+
+      if (waSentToday() >= job.daily_cap) {
+        db.prepare("UPDATE wa_jobs SET status='capped', error=?, updated_at=? WHERE id=?").run(
+          `Daily cap of ${job.daily_cap} reached`,
+          nowIso(),
+          jobId
+        );
+        break;
+      }
+
+      const msg = db
+        .prepare("SELECT * FROM wa_messages WHERE job_id=? AND status='pending' ORDER BY created_at LIMIT 1")
+        .get(jobId);
+
+      if (!msg) {
+        db.prepare("UPDATE wa_jobs SET status='done', error=NULL, updated_at=? WHERE id=?").run(nowIso(), jobId);
+        break;
+      }
+
+      db.prepare("UPDATE wa_messages SET status='sending' WHERE id=?").run(msg.id);
+      const text = renderWaTemplate(job.template, msg);
+
+      try {
+        const sent = await wa.sendText(msg.phone, text);
+        db.prepare(
+          "UPDATE wa_messages SET status='sent', wa_message_id=?, sent_at=?, message=?, error=NULL WHERE id=?"
+        ).run(sent.id, nowIso(), text, msg.id);
+        db.prepare('UPDATE wa_jobs SET sent=sent+1, updated_at=? WHERE id=?').run(nowIso(), jobId);
+      } catch (err) {
+        db.prepare("UPDATE wa_messages SET status='failed', message=?, error=? WHERE id=?").run(
+          text,
+          err.message,
+          msg.id
+        );
+        db.prepare('UPDATE wa_jobs SET failed=failed+1, updated_at=? WHERE id=?').run(nowIso(), jobId);
+        if (/not connected/i.test(err.message)) {
+          db.prepare("UPDATE wa_jobs SET status='paused', error=?, updated_at=? WHERE id=?").run(
+            err.message,
+            nowIso(),
+            jobId
+          );
+          break;
+        }
+      }
+
+      const next = db
+        .prepare("SELECT 1 FROM wa_messages WHERE job_id=? AND status='pending' LIMIT 1")
+        .get(jobId);
+      if (!next) {
+        db.prepare("UPDATE wa_jobs SET status='done', error=NULL, updated_at=? WHERE id=?").run(nowIso(), jobId);
+        break;
+      }
+
+      // Rate limit: delay + random jitter so traffic never looks like a burst.
+      const base = Math.max(5, job.delay_seconds || 30) * 1000;
+      const jitter = Math.floor(Math.random() * 15000);
+      await new Promise((r) => setTimeout(r, base + jitter));
+    }
+  } catch (err) {
+    db.prepare("UPDATE wa_jobs SET status='failed', error=?, updated_at=? WHERE id=?").run(
+      err.message,
+      nowIso(),
+      jobId
+    );
+  } finally {
+    runningWaJobs.delete(jobId);
+  }
+}
+
+app.get('/api/whatsapp/status', (_req, res) => {
+  res.json({ ...wa.getState(), todaySent: waSentToday() });
+});
+
+app.post('/api/whatsapp/connect', async (_req, res) => {
+  try {
+    const st = await wa.connect(WA_SESSION_DIR);
+    res.json(st);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/whatsapp/logout', async (_req, res) => {
+  try {
+    const st = await wa.logout();
+    res.json(st);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/whatsapp/recipients', (req, res) => {
+  const { state = '', city = '', limit = '' } = req.query;
+  const cap = parseInt(limit, 10) || 0;
+  const all = waBuildRecipients({ state: String(state).trim(), city: String(city).trim() });
+  const selected = cap > 0 ? all.slice(0, cap) : all;
+  res.json({
+    matched: all.length,
+    selected: selected.length,
+    sample: selected.slice(0, 10),
+  });
+});
+
+app.post('/api/whatsapp/send', (req, res) => {
+  const body = req.body || {};
+  const template = String(body.template || '').trim();
+  if (template.length < 2) return res.status(400).json({ error: 'Message template is empty' });
+  if (!wa.isConnected()) {
+    return res.status(409).json({ error: 'WhatsApp is not connected. Scan the QR code first.' });
+  }
+
+  const active = countActiveWaJob();
+  if (active) {
+    return res.status(409).json({
+      error: 'A WhatsApp campaign is already running. Stop or finish it first.',
+      jobId: active.id,
+    });
+  }
+
+  const delaySeconds = Math.min(600, Math.max(5, parseInt(body.delaySeconds, 10) || 30));
+  const dailyCap = Math.min(1000, Math.max(1, parseInt(body.dailyCap, 10) || 100));
+  const limit = Math.min(5000, Math.max(0, parseInt(body.limit, 10) || 0));
+  const recipients = waBuildRecipients({
+    state: String(body.state || '').trim(),
+    city: String(body.city || '').trim(),
+    limit,
+  });
+
+  if (!recipients.length) {
+    return res.status(400).json({
+      error: 'No eligible contacts. They may already be messaged, blacklisted, or the filter matched nothing.',
+    });
+  }
+
+  const jobId = crypto.randomUUID();
+  const now = nowIso();
+  const insertJob = db.prepare(
+    `INSERT INTO wa_jobs (id, template, delay_seconds, daily_cap, total, sent, failed, status, created_at, updated_at)
+     VALUES (?,?,?,?,?,0,0,'running',?,?)`
+  );
+  const insertMsg = db.prepare(
+    `INSERT INTO wa_messages (id, job_id, name, phone, city, state, message, status, created_at)
+     VALUES (?,?,?,?,?,?,?, 'pending', ?)`
+  );
+  const tx = db.transaction(() => {
+    insertJob.run(jobId, template, delaySeconds, dailyCap, recipients.length, now, now);
+    for (const r of recipients) {
+      insertMsg.run(crypto.randomUUID(), jobId, r.name, r.phone, r.city, r.state, renderWaTemplate(template, r), now);
+    }
+  });
+  tx();
+
+  runWaJob(jobId).catch((err) => console.error('wa job:', err.message));
+  res.json({ jobId, total: recipients.length, delaySeconds, dailyCap });
+});
+
+app.get('/api/whatsapp/jobs', (_req, res) => {
+  const jobs = db
+    .prepare('SELECT * FROM wa_jobs ORDER BY created_at DESC LIMIT 25')
+    .all();
+  res.json(jobs);
+});
+
+app.get('/api/whatsapp/jobs/:id', (req, res) => {
+  const job = db.prepare('SELECT * FROM wa_jobs WHERE id=?').get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'job not found' });
+
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
+  const counts = db
+    .prepare('SELECT status, COUNT(*) AS c FROM wa_messages WHERE job_id=? GROUP BY status')
+    .all(job.id);
+  const total = db.prepare('SELECT COUNT(*) AS c FROM wa_messages WHERE job_id=?').get(job.id).c;
+  const messages = db
+    .prepare('SELECT * FROM wa_messages WHERE job_id=? ORDER BY created_at LIMIT ? OFFSET ?')
+    .all(job.id, limit, (page - 1) * limit);
+
+  res.json({
+    job,
+    counts: Object.fromEntries(counts.map((c) => [c.status, c.c])),
+    messages,
+    total,
+    page,
+    limit,
+  });
+});
+
+app.post('/api/whatsapp/jobs/:id/stop', (req, res) => {
+  const info = db
+    .prepare("UPDATE wa_jobs SET status='stopped', updated_at=? WHERE id=? AND status IN ('running','paused')")
+    .run(nowIso(), req.params.id);
+  res.json({ stopped: info.changes > 0 });
+});
+
+app.post('/api/whatsapp/jobs/:id/resume', (req, res) => {
+  const job = db.prepare('SELECT * FROM wa_jobs WHERE id=?').get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'job not found' });
+  if (!wa.isConnected()) return res.status(409).json({ error: 'WhatsApp is not connected' });
+
+  const active = countActiveWaJob();
+  if (active && active.id !== job.id) {
+    return res.status(409).json({ error: 'Another WhatsApp campaign is running', jobId: active.id });
+  }
+
+  db.prepare("UPDATE wa_jobs SET status='running', error=NULL, updated_at=? WHERE id=?").run(
+    nowIso(),
+    job.id
+  );
+  runWaJob(job.id).catch((err) => console.error('wa job:', err.message));
+  res.json({ resumed: true });
+});
+
+app.delete('/api/whatsapp/jobs/:id', (req, res) => {
+  db.prepare('DELETE FROM wa_messages WHERE job_id=?').run(req.params.id);
+  db.prepare('DELETE FROM wa_jobs WHERE id=?').run(req.params.id);
+  res.json({ deleted: true });
+});
+
+app.get('/api/whatsapp/blacklist', (_req, res) => {
+  res.json(db.prepare('SELECT * FROM wa_blacklist ORDER BY created_at DESC').all());
+});
+
+app.post('/api/whatsapp/blacklist', (req, res) => {
+  const phone = wa.normalizePhone(req.body?.phone);
+  if (!phone || phone.length < 10) return res.status(400).json({ error: 'Invalid phone number' });
+  db.prepare('INSERT OR REPLACE INTO wa_blacklist (phone, reason, created_at) VALUES (?,?,?)').run(
+    phone,
+    String(req.body?.reason || '').slice(0, 200),
+    nowIso()
+  );
+  res.json({ added: true, phone });
+});
+
+app.delete('/api/whatsapp/blacklist/:phone', (req, res) => {
+  const phone = wa.normalizePhone(req.params.phone);
+  const info = db.prepare('DELETE FROM wa_blacklist WHERE phone=?').run(phone);
+  res.json({ removed: info.changes > 0 });
 });
 
 // Add indexes for lead database performance (idempotent)

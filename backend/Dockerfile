@@ -10,7 +10,7 @@ ENV PORT=5000 \
     DB_PATH=/data/leadfinder.db
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
-COPY server.js providers.cjs cities.json areas.json cityCoords.json ./
+COPY server.js providers.cjs cities.json areas.json cityCoords.json whatsapp.js ./
 RUN mkdir -p /data
 EXPOSE 5000
 CMD ["node", "server.js"]

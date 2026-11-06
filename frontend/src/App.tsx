@@ -11,6 +11,7 @@ import { DashboardPage } from './pages/DashboardPage';
 import { LeadDatabasePage } from './pages/LeadDatabasePage';
 import { SavedListsPage } from './pages/SavedListsPage';
 import { MailFinderPage } from './pages/MailFinderPage';
+import { WhatsAppPage } from './pages/WhatsAppPage';
 
 export default function App() {
   const [page, setPage] = useState<PageKey>('dashboard');
@@ -49,6 +50,7 @@ export default function App() {
         <FindLeadsPage runId={activeRunId} onRunChange={setActiveRunId} />
       )}
       {page === 'mailfinder' && <MailFinderPage />}
+      {page === 'whatsapp' && <WhatsAppPage />}
       {page === 'database' && <LeadDatabasePage />}
       {page === 'saved' && <SavedListsPage />}
       {page === 'history' && (

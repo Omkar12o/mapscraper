@@ -107,6 +107,38 @@ Then open **http://localhost:5173**.
 - Export: **CSV** and **Excel (.xlsx)** (Name, Phone, Address, City, State).
 - **History** page: lists previous searches (niche, state, date, count) with re-download and retry for failed runs.
 
+## WhatsApp Sender (optional)
+
+The **WhatsApp Sender** page bulk-messages your saved leads over WhatsApp Web using
+[Baileys](https://github.com/WhiskeySockets/Baileys). It is off until you link a device.
+
+1. Open **WhatsApp Sender** in the sidebar and click **Connect**.
+2. Scan the QR code with your phone: **WhatsApp → Linked devices → Link a device**.
+   The credentials are saved in `backend/data/wa-session/`, so you only scan once.
+3. Pick a state (and optionally a city), write a message template, then preview
+   the recipients and start the campaign.
+
+**Template variables:** `{name}`, `{city}`, `{state}`, `{phone}`.
+
+**Safety controls** (built in, do not remove):
+
+| Control | Default | Notes |
+|---|---|---|
+| Delay between messages | 45 s | Adds 0–15 s random jitter; minimum 5 s |
+| Daily cap (all campaigns) | 100 | Counted across every campaign for today |
+| Max recipients per campaign | 50 | Set to `0` to use all eligible contacts |
+| Duplicate protection | on | Skips numbers already sent/pending |
+| Do-not-contact list | on | Skipped by every campaign |
+
+> **Ban risk:** This uses the unofficial WhatsApp Web protocol, not the official
+> Business API. WhatsApp may ban a number that sends bulk or unsolicited messages.
+> Only contact people who opted in, use a dedicated number, keep delays at 30–60 s
+> or more, and stay under ~100 messages/day. The app shows the same warning in the UI.
+
+Only one campaign runs at a time. If WhatsApp disconnects mid-campaign the job is
+paused automatically; reconnect and press **Resume**. A campaign also pauses when
+the server restarts.
+
 ## Configuration (.env / environment)
 
 | Variable | Default | Description |
@@ -130,6 +162,7 @@ lead-finder/
 ├── docker-compose.yml          # starts scraper + backend + frontend
 ├── backend/                    # Node/Express API
 │   ├── server.js               # backend: fan-out, poll, clean, SQLite history
+│   ├── whatsapp.js             # Baileys WhatsApp connection + message sender
 │   ├── providers.cjs           # multi-provider adapters (serper, serpapi, ...)
 │   ├── cities.json             # all Indian states/UTs + major cities
 │   ├── areas.json              # city -> areas mapping

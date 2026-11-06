@@ -208,4 +208,39 @@ export const api = {
     a.click();
     document.body.removeChild(a);
   },
+
+  // WhatsApp bulk sender (Baileys)
+  getWhatsAppStatus: (): Promise<any> => request('/whatsapp/status'),
+  connectWhatsApp: (): Promise<any> => request('/whatsapp/connect', { method: 'POST' }),
+  logoutWhatsApp: (): Promise<any> => request('/whatsapp/logout', { method: 'POST' }),
+  previewWhatsAppRecipients: (opts: { state?: string; city?: string; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (opts.state) params.set('state', opts.state);
+    if (opts.city) params.set('city', opts.city);
+    if (opts.limit) params.set('limit', String(opts.limit));
+    return request(`/whatsapp/recipients?${params.toString()}`);
+  },
+  startWhatsAppCampaign: (body: {
+    template: string;
+    state?: string;
+    city?: string;
+    delaySeconds?: number;
+    dailyCap?: number;
+    limit?: number;
+  }): Promise<{ jobId: string; total: number }> =>
+    request('/whatsapp/send', { method: 'POST', body: JSON.stringify(body) }),
+  listWhatsAppJobs: (): Promise<any[]> => request('/whatsapp/jobs'),
+  getWhatsAppJob: (jobId: string, page = 1, limit = 50): Promise<any> =>
+    request(`/whatsapp/jobs/${encodeURIComponent(jobId)}?page=${page}&limit=${limit}`),
+  stopWhatsAppJob: (jobId: string): Promise<{ stopped: boolean }> =>
+    request(`/whatsapp/jobs/${encodeURIComponent(jobId)}/stop`, { method: 'POST' }),
+  resumeWhatsAppJob: (jobId: string): Promise<{ resumed: boolean }> =>
+    request(`/whatsapp/jobs/${encodeURIComponent(jobId)}/resume`, { method: 'POST' }),
+  deleteWhatsAppJob: (jobId: string) =>
+    request(`/whatsapp/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' }),
+  getWhatsAppBlacklist: (): Promise<any[]> => request('/whatsapp/blacklist'),
+  addWhatsAppBlacklist: (phone: string, reason?: string) =>
+    request('/whatsapp/blacklist', { method: 'POST', body: JSON.stringify({ phone, reason }) }),
+  removeWhatsAppBlacklist: (phone: string) =>
+    request(`/whatsapp/blacklist/${encodeURIComponent(phone)}`, { method: 'DELETE' }),
 };
