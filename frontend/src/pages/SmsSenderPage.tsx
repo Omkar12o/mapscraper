@@ -886,7 +886,7 @@ export function SmsSenderPage() {
                 <TableHeadCell>Progress</TableHeadCell>
                 <TableHeadCell>Sent</TableHeadCell>
                 <TableHeadCell>Failed</TableHeadCell>
-                <TableHeadCell>{''}</TableHeadCell>
+                <TableHeadCell>Actions</TableHeadCell>
               </tr>
             </thead>
             <tbody>
@@ -962,7 +962,7 @@ export function SmsSenderPage() {
                   <TableHeadCell>Phone</TableHeadCell>
                   <TableHeadCell>Reason</TableHeadCell>
                   <TableHeadCell>Added</TableHeadCell>
-                  <TableHeadCell>{''}</TableHeadCell>
+                  <TableHeadCell>Remove</TableHeadCell>
                 </tr>
               </thead>
               <tbody>
