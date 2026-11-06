@@ -95,7 +95,7 @@ export function SmsSenderPage() {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
-  const [provider, setProvider] = useState<'fast2sms' | 'twilio'>('fast2sms');
+  const [provider, setProvider] = useState<'fast2sms' | 'twilio' | 'textbelt'>('fast2sms');
   const [countryCode, setCountryCode] = useState('91');
   const [apiKey, setApiKey] = useState('');
   const [senderId, setSenderId] = useState('');
@@ -170,7 +170,8 @@ export function SmsSenderPage() {
 
   useEffect(() => {
     if (!status || settingsLoaded) return;
-    setProvider(status.provider === 'twilio' ? 'twilio' : 'fast2sms');
+    const prov = status.provider;
+    setProvider(prov === 'twilio' ? 'twilio' : prov === 'textbelt' ? 'textbelt' : 'fast2sms');
     setCountryCode(status.countryCode || '91');
     setSenderId(status.senderId || '');
     setRoute(status.route || 'q');
@@ -449,10 +450,11 @@ export function SmsSenderPage() {
                 </label>
                 <Select
                   value={provider}
-                  onChange={(e) => setProvider(e.target.value as 'fast2sms' | 'twilio')}
+                  onChange={(e) => setProvider(e.target.value as 'fast2sms' | 'twilio' | 'textbelt')}
                 >
                   <option value="fast2sms">Fast2SMS (India)</option>
                   <option value="twilio">Twilio (global)</option>
+                  <option value="textbelt">TextBelt (free tier)</option>
                 </Select>
               </div>
               <div>
@@ -515,7 +517,7 @@ export function SmsSenderPage() {
                     </div>
                   )}
                 </>
-              ) : (
+              ) : provider === 'twilio' ? (
                 <>
                   <div>
                     <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
@@ -552,6 +554,20 @@ export function SmsSenderPage() {
                     </p>
                   </div>
                 </>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
+                      API key
+                    </label>
+                    <Input
+                      type="password"
+                      placeholder={status?.hasApiKey ? 'Saved — leave blank to keep' : 'TextBelt API key (free tier)'}
+                      value={apiKey}
+                      onChange={(e) => setApiKey(e.target.value)}
+                    />
+                  </div>
+                </>
               )}
             </div>
 
@@ -567,7 +583,8 @@ export function SmsSenderPage() {
 
             <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
               Fast2SMS needs an API key from your dashboard. Twilio needs an Account SID, Auth Token
-              and a sending number. You can also set these values in <code>backend/.env</code>.
+              and a sending number. TextBelt has a free daily tier — get a key at textbelt.com. You
+              can also set these values in <code>backend/.env</code>.
             </p>
           </div>
         )}

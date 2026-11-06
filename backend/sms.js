@@ -22,6 +22,10 @@ export const PROVIDERS = {
     label: 'Twilio (global)',
     signup: 'https://www.twilio.com/',
   },
+  textbelt: {
+    label: 'TextBelt (free tier)',
+    signup: 'https://textbelt.com/',
+  },
 };
 
 const DEFAULT_COUNTRY_CODE = '91';
@@ -108,7 +112,7 @@ function normalizeCountryCode(value) {
 export function getConfig() {
   const provider = (pick('SMS_PROVIDER', 'provider') || 'fast2sms').toLowerCase();
   const countryCode = normalizeCountryCode(pick('SMS_COUNTRY_CODE', 'countryCode'));
-  const apiKey = pick('FAST2SMS_API_KEY', 'apiKey');
+  const apiKey = provider === 'textbelt' ? pick('TEXTBELT_API_KEY', 'apiKey') : pick('FAST2SMS_API_KEY', 'apiKey');
   const senderId = pick('FAST2SMS_SENDER_ID', 'senderId');
   const route = (pick('FAST2SMS_ROUTE', 'route') || 'q').toLowerCase();
   const templateId = pick('FAST2SMS_TEMPLATE_ID', 'templateId');
@@ -119,6 +123,7 @@ export function getConfig() {
   let configured = false;
   if (provider === 'twilio') configured = !!(accountSid && authToken && from);
   else if (provider === 'fast2sms') configured = !!apiKey;
+  else if (provider === 'textbelt') configured = !!apiKey;
 
   return {
     provider,
@@ -142,6 +147,7 @@ export function getSafeConfig() {
     'FAST2SMS_API_KEY',
     'TWILIO_ACCOUNT_SID',
     'TWILIO_AUTH_TOKEN',
+    'TEXTBELT_API_KEY',
   ].some((key) => !!env(key));
   const usingFile = !usingEnv && !!(fileConfig.provider || fileConfig.apiKey || fileConfig.accountSid);
 
@@ -219,6 +225,8 @@ export function saveConfig(input = {}) {
     if (senderId && !/^[A-Za-z0-9]{3,11}$/.test(senderId)) {
       throw new Error('Sender ID must be 3–11 letters or digits (e.g. TXTIND).');
     }
+  } else if (provider === 'textbelt') {
+    if (!apiKey) throw new Error('TextBelt API key is required.');
   } else {
     if (!/^AC[0-9a-f]{32}$/i.test(accountSid)) {
       throw new Error('Twilio Account SID must start with "AC" and be 34 characters.');
@@ -232,7 +240,7 @@ export function saveConfig(input = {}) {
   const payload = {
     provider,
     countryCode,
-    apiKey: provider === 'fast2sms' ? apiKey : String(fileConfig.apiKey || ''),
+    apiKey: provider === 'fast2sms' || provider === 'textbelt' ? apiKey : String(fileConfig.apiKey || ''),
     senderId,
     route,
     templateId,
@@ -326,6 +334,22 @@ async function sendFast2Sms(cfg, to, text) {
   return { messageId: String(data.request_id || first || ''), provider: 'fast2sms' };
 }
 
+async function sendTextBelt(cfg, to, text) {
+  const { res, data } = await postJson('https://textbelt.com/text', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify({ phone: to, message: text, key: cfg.apiKey }),
+  });
+
+  const ok = res.ok && (data?.status === undefined || data?.status === 200);
+  if (!ok) {
+    const raw = String(data?.error ?? data?.message ?? `HTTP ${res.status}`).slice(0, 300);
+    throw providerError(raw, { status: res.status });
+  }
+
+  return { messageId: String(data?.data?.id ?? ''), provider: 'textbelt' };
+}
+
 async function sendTwilio(cfg, to, text) {
   const auth = Buffer.from(`${cfg.accountSid}:${cfg.authToken}`).toString('base64');
   const body = new URLSearchParams({
@@ -372,6 +396,7 @@ export async function sendSms({ to, text }) {
   }
 
   if (cfg.provider === 'twilio') return sendTwilio(cfg, phone, body);
+  if (cfg.provider === 'textbelt') return sendTextBelt(cfg, phone, body);
   return sendFast2Sms(cfg, phone, body);
 }
 

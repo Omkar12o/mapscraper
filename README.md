@@ -213,11 +213,12 @@ failures pause the campaign so you can fix the settings and press **Resume**. A
 server restart also pauses running campaigns, and any in-flight email is put back
 in the queue.
 
-## SMS Sender (optional, SMS via Fast2SMS or Twilio)
+## SMS Sender (optional, SMS via Fast2SMS / Twilio / TextBelt)
 
 The **SMS Sender** page texts the phone numbers found by **Find Leads** through
-your SMS provider — [Fast2SMS](https://www.fast2sms.com/) (India, default) or
-[Twilio](https://www.twilio.com/) (global). It mirrors the Mail Sender setup:
+your SMS provider — [Fast2SMS](https://www.fast2sms.com/) (India, default),
+[Twilio](https://www.twilio.com/) (global), or [TextBelt](https://textbelt.com/)
+(free tier for testing). It mirrors the Mail Sender setup:
 configure from the UI, no restart needed.
 
 ### Configure SMS in the app (recommended)
@@ -314,6 +315,7 @@ server restart pauses running campaigns; in-flight SMS go back to the queue.
 | TWILIO_ACCOUNT_SID | — | Twilio Account SID |
 | TWILIO_AUTH_TOKEN | — | Twilio Auth Token |
 | TWILIO_FROM | — | Twilio From number in E.164, e.g. `+14155550123` |
+| TEXTBELT_API_KEY | — | TextBelt API key (free daily tier for testing) |
 | SMS_DELAY_SECONDS | 15 | Default delay between SMS |
 | SMS_DAILY_CAP | 100 | Default daily SMS cap |
 

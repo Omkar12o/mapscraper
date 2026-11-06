@@ -304,7 +304,7 @@ export const api = {
   // SMS sender (Fast2SMS / Twilio)
   getSmsStatus: (): Promise<any> => request('/sms/status'),
   saveSmsConfig: (body: {
-    provider: 'fast2sms' | 'twilio';
+    provider: 'fast2sms' | 'twilio' | 'textbelt';
     countryCode?: string;
     apiKey?: string;
     senderId?: string;
