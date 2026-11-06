@@ -1328,11 +1328,12 @@ async function processOneJob(job, run) {
 
     for (const row of rows) {
       const name = String(row.name || '').trim();
-      const phone = String(row.phone || '');
+      const phone = String(row.phone || '').replace(/[^\d+]/g, '');
       const address = String(row.address || '');
       const state = String(row.state || '');
       const city = String(row.city || '');
       if (!name || !phone) continue;
+      // Only accept structurally valid numbers: "+" + country code + 10+ digits.
       if (!/^\+\d{1,3}\d{10}$/.test(phone)) continue;
 
       const key = dedupeKey(name, address);
@@ -1743,7 +1744,7 @@ function buildDeepPlan({ niche, state, city, deep, target, variants }) {
   return { levels, flat, target: target || 3000 };
 }
 
-async function startSearchRun({ niche, state, city, maxResults, deepSearch, extraVariants, onRunId = null }) {
+async function startSearchRun({ niche, state, city, maxResults, deepSearch, extraVariants, onRunId = null, allowCache = true }) {
   const st = findState(state);
   if (!st) throw new Error('unknown state');
 
@@ -1765,14 +1766,17 @@ async function startSearchRun({ niche, state, city, maxResults, deepSearch, extr
   // needs those URLs to crawl for public emails. An old lead-only run with no
   // websites would otherwise "finish" instantly with zero emails. When the user
   // asked for a bigger target than the cached run has, scrape fresh instead.
-  const cached = db.prepare(
-    `SELECT r.id, r.status, r.result_count,
-        (SELECT COUNT(*) FROM results x
-          WHERE x.run_id = r.id AND TRIM(COALESCE(x.website,'')) <> '') AS with_site
-     FROM runs r
-     WHERE r.niche=? AND r.state=? AND r.city IS ? AND r.status='done'
-     ORDER BY r.updated_at DESC LIMIT 1`
-  ).get(niche, st.name, city || '');
+  // User-initiated searches always scrape fresh (allowCache=false from /api/search).
+  const cached = allowCache
+    ? db.prepare(
+        `SELECT r.id, r.status, r.result_count,
+            (SELECT COUNT(*) FROM results x
+              WHERE x.run_id = r.id AND TRIM(COALESCE(x.website,'')) <> '') AS with_site
+       FROM runs r
+       WHERE r.niche=? AND r.state=? AND r.city IS ? AND r.status='done'
+       ORDER BY r.updated_at DESC LIMIT 1`
+      ).get(niche, st.name, city || '')
+    : null;
   if (cached && cached.with_site > 0 && (!limitTarget || cached.result_count >= limitTarget)) {
     console.log(`reusing cached run ${cached.id} (${cached.result_count} businesses, ${cached.with_site} with websites)`);
     if (onRunId) onRunId(cached.id);
@@ -1919,7 +1923,7 @@ app.post('/api/search', async (req, res) => {
   const st = findState(state);
   if (!st) return res.status(400).json({ error: 'unknown state' });
 
-  const result = await startSearchRun({ niche, state, city, maxResults, deepSearch, extraVariants });
+  const result = await startSearchRun({ niche, state, city, maxResults, deepSearch, extraVariants, allowCache: false });
   if (result.cached) {
     return res.json({
       runId: result.runId,
