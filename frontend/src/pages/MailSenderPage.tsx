@@ -483,6 +483,10 @@ export function MailSenderPage() {
                   value={smtpFrom}
                   onChange={(e) => setSmtpFrom(e.target.value)}
                 />
+                <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                  Leave blank to use the username. Both <code>you@gmail.com</code> and{' '}
+                  <code>Your Name &lt;you@gmail.com&gt;</code> work.
+                </p>
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">

@@ -27,11 +27,48 @@ function env(name, fallback = '') {
   return String(value === undefined || value === null ? fallback : value).trim();
 }
 
-/** Extract a bare address from "Name <email>" or "email". */
+/**
+ * Pull the first email address out of a free-form string.
+ * Accepts "you@example.com", "Name <you@example.com>",
+ * "you@example.com, Name" and similar pasted values.
+ */
+function looseEmail(value) {
+  const raw = String(value || '')
+    .trim()
+    .replace(/^mailto:/i, '');
+  if (!raw) return '';
+
+  const angled = raw.match(/<\s*([^>]+?)\s*>/);
+  const direct = normalizeEmail(angled ? angled[1] : raw);
+  if (direct) return direct;
+
+  const found = raw.match(/[^\s@<>"',;:]+@[^\s@<>"',;:]+\.[A-Za-z]{2,}/);
+  return found ? normalizeEmail(found[0]) : '';
+}
+
+/**
+ * Canonical From value: keeps "Name <email>" when given, otherwise
+ * falls back to the bare address.
+ */
+function normalizeFrom(value) {
+  const raw = String(value || '')
+    .trim()
+    .replace(/^mailto:/i, '');
+  if (!raw) return '';
+
+  const named = raw.match(/^(.+?)\s*<\s*([^>]+?)\s*>\s*$/);
+  if (named) {
+    const address = looseEmail(named[2]);
+    if (!address) return '';
+    const name = named[1].replace(/^["']|["']$/g, '').trim();
+    return name ? `${name} <${address}>` : address;
+  }
+  return looseEmail(raw);
+}
+
+/** Backwards-compatible name used across the mailer. */
 function extractAddress(value) {
-  const raw = String(value || '').trim();
-  const angled = raw.match(/<([^>]+)>/);
-  return normalizeEmail(angled ? angled[1] : raw);
+  return looseEmail(value);
 }
 
 function loadFileConfig() {
@@ -79,7 +116,7 @@ export function getConfig() {
     port === 465;
   const user = pick('SMTP_USER', 'user');
   const pass = pick('SMTP_PASS', 'pass');
-  const from = pick('MAIL_FROM', 'from') || user;
+  const from = normalizeFrom(pick('MAIL_FROM', 'from') || user);
   const replyTo = pick('MAIL_REPLY_TO', 'replyTo');
   const unsubscribeUrl = pick('MAIL_UNSUBSCRIBE_URL', 'unsubscribeUrl');
 
@@ -141,9 +178,12 @@ export function saveConfig(input = {}) {
       ? current.user
       : String(input.user).trim() || current.user;
   const fromInput = input.from === undefined ? '' : String(input.from).trim();
-  const from = fromInput || current.from || user;
+  // Blank From is fine when the username is an email address.
+  const from = normalizeFrom(fromInput || (looseEmail(user) ? user : ''));
   const replyTo =
-    input.replyTo === undefined ? current.replyTo : String(input.replyTo).trim();
+    input.replyTo === undefined
+      ? current.replyTo
+      : normalizeFrom(String(input.replyTo).trim());
   const unsubscribeUrl =
     input.unsubscribeUrl === undefined
       ? current.unsubscribeUrl
@@ -155,8 +195,18 @@ export function saveConfig(input = {}) {
   const effectivePass = env('SMTP_PASS') || filePass;
 
   if (!host) throw new Error('SMTP host is required (for example smtp.gmail.com).');
-  if (!extractAddress(from)) throw new Error('Enter a valid From address.');
-  if (replyTo && !extractAddress(replyTo)) throw new Error('Enter a valid Reply-To address.');
+  if (!from) {
+    const typed = String(fromInput || user || '').trim();
+    throw new Error(
+      `From address is not valid${typed ? ` ("${typed.slice(0, 80)}")` : ''}. ` +
+        'Use a real email such as "you@gmail.com" or "Your Name <you@gmail.com>".'
+    );
+  }
+  if (replyTo && !extractAddress(replyTo)) {
+    throw new Error(
+      'Reply-To is not a valid email. Use "you@gmail.com" or "Your Name <you@gmail.com>".'
+    );
+  }
   if (unsubscribeUrl && !/^https?:\/\//i.test(unsubscribeUrl)) {
     throw new Error('Unsubscribe URL must start with http:// or https://.');
   }
