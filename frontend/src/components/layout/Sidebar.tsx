@@ -34,10 +34,8 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'whatsapp', label: 'WhatsApp Sender', icon: MessageCircle },
   { key: 'smssender', label: 'SMS Sender', icon: MessageSquare },
   { key: 'database', label: 'Lead database', icon: Database },
-  { key: 'saved', label: 'Saved lists', icon: List },
   { key: 'history', label: 'History', icon: History },
   { key: 'sources', label: 'Data sources', icon: SettingsIcon },
-  { key: 'settings', label: 'Settings', icon: SettingsIcon },
 ];
 
 interface SidebarProps {
