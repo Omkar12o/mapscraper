@@ -251,4 +251,40 @@ export const api = {
     request('/whatsapp/blacklist', { method: 'POST', body: JSON.stringify({ phone, reason }) }),
   removeWhatsAppBlacklist: (phone: string) =>
     request(`/whatsapp/blacklist/${encodeURIComponent(phone)}`, { method: 'DELETE' }),
+
+  // Mail sender (SMTP)
+  getMailSenderStatus: (): Promise<any> => request('/mailsender/status'),
+  testMailSender: (to: string): Promise<{ sent: boolean; to: string; messageId: string }> =>
+    request('/mailsender/test', { method: 'POST', body: JSON.stringify({ to }) }),
+  previewMailRecipients: (opts: { state?: string; city?: string; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (opts.state) params.set('state', opts.state);
+    if (opts.city) params.set('city', opts.city);
+    if (opts.limit) params.set('limit', String(opts.limit));
+    return request(`/mailsender/recipients?${params.toString()}`);
+  },
+  startMailCampaign: (body: {
+    subject: string;
+    template: string;
+    state?: string;
+    city?: string;
+    delaySeconds?: number;
+    dailyCap?: number;
+    limit?: number;
+  }): Promise<{ jobId: string; total: number }> =>
+    request('/mailsender/send', { method: 'POST', body: JSON.stringify(body) }),
+  listMailSenderJobs: (): Promise<any[]> => request('/mailsender/jobs'),
+  getMailSenderJob: (jobId: string, page = 1, limit = 50): Promise<any> =>
+    request(`/mailsender/jobs/${encodeURIComponent(jobId)}?page=${page}&limit=${limit}`),
+  stopMailSenderJob: (jobId: string): Promise<{ stopped: boolean }> =>
+    request(`/mailsender/jobs/${encodeURIComponent(jobId)}/stop`, { method: 'POST' }),
+  resumeMailSenderJob: (jobId: string): Promise<{ resumed: boolean }> =>
+    request(`/mailsender/jobs/${encodeURIComponent(jobId)}/resume`, { method: 'POST' }),
+  deleteMailSenderJob: (jobId: string) =>
+    request(`/mailsender/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' }),
+  getMailSenderBlacklist: (): Promise<any[]> => request('/mailsender/blacklist'),
+  addMailSenderBlacklist: (email: string, reason?: string) =>
+    request('/mailsender/blacklist', { method: 'POST', body: JSON.stringify({ email, reason }) }),
+  removeMailSenderBlacklist: (email: string) =>
+    request(`/mailsender/blacklist/${encodeURIComponent(email)}`, { method: 'DELETE' }),
 };

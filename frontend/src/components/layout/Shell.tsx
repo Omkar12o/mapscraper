@@ -7,7 +7,7 @@ import { Sidebar } from './Sidebar';
 import { Topbar } from './Topbar';
 import { ToastProvider } from '../ui';
 
-export type PageKey = 'dashboard' | 'finder' | 'mailfinder' | 'whatsapp' | 'database' | 'saved' | 'history' | 'sources' | 'settings';
+export type PageKey = 'dashboard' | 'finder' | 'mailfinder' | 'mailsender' | 'whatsapp' | 'database' | 'saved' | 'history' | 'sources' | 'settings';
 
 interface ShellProps {
   children: React.ReactNode;

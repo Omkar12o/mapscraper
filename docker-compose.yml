@@ -34,6 +34,17 @@ services:
       - POLL_INTERVAL_MS=5000
       - CONCURRENCY=3
       - DB_PATH=/data/leadfinder.db
+      # Mail Sender (optional) — set these in a root .env file for Docker.
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_SECURE=${SMTP_SECURE:-false}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASS=${SMTP_PASS:-}
+      - MAIL_FROM=${MAIL_FROM:-}
+      - MAIL_REPLY_TO=${MAIL_REPLY_TO:-}
+      - MAIL_UNSUBSCRIBE_URL=${MAIL_UNSUBSCRIBE_URL:-}
+      - MAIL_DELAY_SECONDS=${MAIL_DELAY_SECONDS:-45}
+      - MAIL_DAILY_CAP=${MAIL_DAILY_CAP:-50}
     volumes:
       - leadfinder-data:/data
     depends_on:

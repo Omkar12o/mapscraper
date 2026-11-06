@@ -142,6 +142,50 @@ Only one campaign runs at a time. If WhatsApp disconnects mid-campaign the job i
 paused automatically; reconnect and press **Resume**. A campaign also pauses when
 the server restarts.
 
+## Mail Sender (optional, SMTP)
+
+The **Mail Sender** page emails the addresses found by **Mail Finder** through your
+own SMTP account (Gmail/Workspace, Brevo, Resend, SendGrid, Mailgun, Amazon SES, …).
+It is disabled until you set the SMTP variables.
+
+1. Copy the Mail Sender block from `backend/.env.example` into `backend/.env`.
+2. Fill in `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` and `MAIL_FROM`.
+   - **Gmail:** use an [App Password](https://myaccount.google.com/apppasswords)
+     (`SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=587`, `SMTP_SECURE=false`).
+   - **Brevo / Resend / SendGrid / Mailgun / SES:** use their SMTP host and API key
+     as the password.
+3. Set `MAIL_UNSUBSCRIBE_URL` to your unsubscribe page so a one-click
+   `List-Unsubscribe` header is added automatically.
+4. Restart the backend, then use **Test email** on the page to confirm it works.
+
+> Running with Docker? Put the same `SMTP_*` / `MAIL_*` variables in a `.env` file at
+> the repository root — `docker-compose.yml` passes them to the backend container.
+
+**Template variables:** `{name}`, `{business}`, `{city}`, `{state}`, `{email}`
+(subject supports `{name}`, `{business}`, `{city}`).
+
+**Safety controls:**
+
+| Control | Default | Notes |
+|---|---|---|
+| Delay between emails | 45 s | Adds 0–10 s random jitter; minimum 5 s |
+| Daily cap (all campaigns) | 50 | Counted across every campaign for today |
+| Max recipients per campaign | 25 | Set to `0` to use all eligible addresses |
+| Duplicate protection | on | Skips addresses already emailed/pending |
+| Opt-out list | on | Skipped by every campaign |
+| Auto opt-out footer | on | Added to every email |
+
+> **Deliverability:** cold email is heavily filtered. Use a separate sending domain,
+> warm it up, and configure SPF, DKIM and DMARC. Typical safe cold-outreach volume is
+> **20–50 emails/day per mailbox** — provider hard limits are higher, but inbox
+> placement and account suspension are the real constraints. Never use your main
+> Gmail/Outlook inbox for bulk sending.
+
+Like the WhatsApp sender, only one mail campaign runs at a time. Auth/connection
+failures pause the campaign so you can fix the settings and press **Resume**. A
+server restart also pauses running campaigns, and any in-flight email is put back
+in the queue.
+
 ## Configuration (.env / environment)
 
 | Variable | Default | Description |
@@ -155,6 +199,16 @@ the server restarts.
 | POLL_INTERVAL_MS | 5000 | Backend poll interval for job status |
 | DB_PATH | ./data/leadfinder.db | SQLite history database path |
 | VITE_API_BASE | /api | Frontend API base (dev proxy to backend) |
+| SMTP_HOST | — | SMTP server (empty = Mail Sender disabled) |
+| SMTP_PORT | 587 | SMTP port (465 enables TLS) |
+| SMTP_SECURE | false | `true` for implicit TLS (port 465) |
+| SMTP_USER | — | SMTP username |
+| SMTP_PASS | — | SMTP password / API key |
+| MAIL_FROM | SMTP_USER | From address, e.g. `Lead Finder <you@domain.com>` |
+| MAIL_REPLY_TO | — | Optional reply-to address |
+| MAIL_UNSUBSCRIBE_URL | — | Adds one-click `List-Unsubscribe` header + footer line |
+| MAIL_DELAY_SECONDS | 45 | Default delay between emails |
+| MAIL_DAILY_CAP | 50 | Default daily email cap |
 
 Rate/concurrency limits: each scraper job runs with `exit-on-inactivity 3m`, a depth of 10, and a 10 km radius. Jobs run one-at-a-time per city with retries, so the scraper is not overwhelmed.
 
@@ -166,6 +220,7 @@ lead-finder/
 ├── backend/                    # Node/Express API
 │   ├── server.js               # backend: fan-out, poll, clean, SQLite history
 │   ├── whatsapp.js             # Baileys WhatsApp connection + message sender
+│   ├── mailer.js               # SMTP transport for the Mail Sender
 │   ├── providers.cjs           # multi-provider adapters (serper, serpapi, ...)
 │   ├── cities.json             # all Indian states/UTs + major cities
 │   ├── areas.json              # city -> areas mapping

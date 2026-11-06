@@ -11,6 +11,7 @@ import { DashboardPage } from './pages/DashboardPage';
 import { LeadDatabasePage } from './pages/LeadDatabasePage';
 import { SavedListsPage } from './pages/SavedListsPage';
 import { MailFinderPage } from './pages/MailFinderPage';
+import { MailSenderPage } from './pages/MailSenderPage';
 import { WhatsAppPage } from './pages/WhatsAppPage';
 
 export default function App() {
@@ -50,6 +51,7 @@ export default function App() {
         <FindLeadsPage runId={activeRunId} onRunChange={setActiveRunId} />
       )}
       {page === 'mailfinder' && <MailFinderPage />}
+      {page === 'mailsender' && <MailSenderPage />}
       {page === 'whatsapp' && <WhatsAppPage />}
       {page === 'database' && <LeadDatabasePage />}
       {page === 'saved' && <SavedListsPage />}

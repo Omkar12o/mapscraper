@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import Database from 'better-sqlite3';
@@ -6,6 +7,7 @@ import { createRequire } from 'module';
 import ExcelJS from 'exceljs';
 import path from 'node:path';
 import * as wa from './whatsapp.js';
+import * as mailer from './mailer.js';
 
 const { Workbook } = ExcelJS;
 
@@ -272,6 +274,50 @@ try { db.exec('ALTER TABLE mail_jobs ADD COLUMN source TEXT'); } catch (_) {}
     CREATE INDEX IF NOT EXISTS idx_wa_messages_phone ON wa_messages(phone);
     CREATE TABLE IF NOT EXISTS wa_blacklist (
       phone TEXT PRIMARY KEY,
+      reason TEXT,
+      created_at TEXT NOT NULL
+    );
+  `);
+}
+
+// Mail Sender tables (separate from the Mail Finder tables above).
+{
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS mail_sender_jobs (
+      id TEXT PRIMARY KEY,
+      subject TEXT NOT NULL,
+      template TEXT NOT NULL,
+      delay_seconds INTEGER DEFAULT 45,
+      daily_cap INTEGER DEFAULT 50,
+      total INTEGER DEFAULT 0,
+      sent INTEGER DEFAULT 0,
+      failed INTEGER DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'running',
+      error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS mail_sender_messages (
+      id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL,
+      business_name TEXT,
+      email TEXT NOT NULL,
+      city TEXT,
+      state TEXT,
+      subject TEXT,
+      message TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      error TEXT,
+      smtp_message_id TEXT,
+      sent_at TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (job_id) REFERENCES mail_sender_jobs(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_mail_sender_messages_job ON mail_sender_messages(job_id);
+    CREATE INDEX IF NOT EXISTS idx_mail_sender_messages_status ON mail_sender_messages(status);
+    CREATE INDEX IF NOT EXISTS idx_mail_sender_messages_email ON mail_sender_messages(email);
+    CREATE TABLE IF NOT EXISTS mail_sender_blacklist (
+      email TEXT PRIMARY KEY,
       reason TEXT,
       created_at TEXT NOT NULL
     );
@@ -3227,6 +3273,415 @@ app.post('/api/whatsapp/blacklist', (req, res) => {
 app.delete('/api/whatsapp/blacklist/:phone', (req, res) => {
   const phone = wa.normalizePhone(req.params.phone);
   const info = db.prepare('DELETE FROM wa_blacklist WHERE phone=?').run(phone);
+  res.json({ removed: info.changes > 0 });
+});
+
+/* ================================================================== */
+/* Mail Sender (SMTP)                                                  */
+/* ================================================================== */
+
+const MAIL_DEFAULT_DELAY = Math.min(
+  600,
+  Math.max(5, parseInt(process.env.MAIL_DELAY_SECONDS || '45', 10) || 45)
+);
+const MAIL_DEFAULT_CAP = Math.min(
+  500,
+  Math.max(1, parseInt(process.env.MAIL_DAILY_CAP || '50', 10) || 50)
+);
+
+// Any message left mid-send by a restart goes back in the queue.
+try {
+  db.prepare("UPDATE mail_sender_messages SET status='pending' WHERE status='sending'").run();
+} catch (_) {}
+try {
+  db.prepare(
+    "UPDATE mail_sender_jobs SET status='paused', error='Server restarted - press Resume', updated_at=? WHERE status='running'"
+  ).run(nowIso());
+} catch (_) {}
+
+function mailTodayStartIso() {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString();
+}
+
+function mailSentToday() {
+  return db
+    .prepare("SELECT COUNT(*) AS c FROM mail_sender_messages WHERE status='sent' AND sent_at >= ?")
+    .get(mailTodayStartIso()).c;
+}
+
+function mailBlacklistSet() {
+  return new Set(
+    db
+      .prepare('SELECT email FROM mail_sender_blacklist')
+      .all()
+      .map((r) => mailer.normalizeEmail(r.email))
+      .filter(Boolean)
+  );
+}
+
+function mailBuildRecipients({ state, city, limit } = {}) {
+  const where = [
+    "email IS NOT NULL",
+    "TRIM(email) <> ''",
+    "COALESCE(status,'') <> 'invalid'",
+  ];
+  const params = [];
+  if (state) {
+    where.push('state = ?');
+    params.push(state);
+  }
+  if (city) {
+    where.push('LOWER(city) = LOWER(?)');
+    params.push(city);
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT email, MAX(business_name) AS business_name, MAX(city) AS city, MAX(state) AS state
+         FROM mail_results
+        WHERE ${where.join(' AND ')}
+        GROUP BY LOWER(email)
+        ORDER BY MAX(created_at) DESC`
+    )
+    .all(...params);
+
+  const blacklist = mailBlacklistSet();
+  const already = new Set(
+    db
+      .prepare(
+        "SELECT DISTINCT email FROM mail_sender_messages WHERE status IN ('sent','pending','sending')"
+      )
+      .all()
+      .map((r) => mailer.normalizeEmail(r.email))
+      .filter(Boolean)
+  );
+
+  const seen = new Set();
+  const out = [];
+  for (const row of rows) {
+    const email = mailer.normalizeEmail(row.email);
+    if (!email) continue;
+    if (blacklist.has(email) || already.has(email) || seen.has(email)) continue;
+    seen.add(email);
+    out.push({
+      email,
+      name: row.business_name || '',
+      business_name: row.business_name || '',
+      city: row.city || '',
+      state: row.state || '',
+    });
+    if (limit && out.length >= limit) break;
+  }
+  return out;
+}
+
+function activeMailJob() {
+  return db
+    .prepare(
+      "SELECT id FROM mail_sender_jobs WHERE status IN ('running','paused') ORDER BY created_at DESC LIMIT 1"
+    )
+    .get();
+}
+
+const runningMailJobs = new Set();
+
+async function runMailJob(jobId) {
+  if (runningMailJobs.has(jobId)) return;
+  runningMailJobs.add(jobId);
+
+  try {
+    for (;;) {
+      const job = db.prepare('SELECT * FROM mail_sender_jobs WHERE id=?').get(jobId);
+      if (!job || job.status !== 'running') break;
+
+      if (!mailer.getConfig().configured) {
+        db.prepare(
+          "UPDATE mail_sender_jobs SET status='paused', error=?, updated_at=? WHERE id=?"
+        ).run('SMTP is not configured', nowIso(), jobId);
+        break;
+      }
+
+      if (mailSentToday() >= job.daily_cap) {
+        db.prepare(
+          "UPDATE mail_sender_jobs SET status='capped', error=?, updated_at=? WHERE id=?"
+        ).run(`Daily cap of ${job.daily_cap} reached`, nowIso(), jobId);
+        break;
+      }
+
+      const msg = db
+        .prepare(
+          "SELECT * FROM mail_sender_messages WHERE job_id=? AND status='pending' ORDER BY created_at LIMIT 1"
+        )
+        .get(jobId);
+
+      if (!msg) {
+        db.prepare("UPDATE mail_sender_jobs SET status='done', error=NULL, updated_at=? WHERE id=?").run(
+          nowIso(),
+          jobId
+        );
+        break;
+      }
+
+      db.prepare("UPDATE mail_sender_messages SET status='sending' WHERE id=?").run(msg.id);
+
+      const subject = mailer.renderTemplate(job.subject, msg);
+      const text = mailer.renderTemplate(job.template, msg);
+
+      try {
+        const sent = await mailer.sendMail({ to: msg.email, subject, text });
+        db.prepare(
+          "UPDATE mail_sender_messages SET status='sent', smtp_message_id=?, sent_at=?, subject=?, message=?, error=NULL WHERE id=?"
+        ).run(sent.messageId || null, nowIso(), subject, text, msg.id);
+        db.prepare('UPDATE mail_sender_jobs SET sent=sent+1, updated_at=? WHERE id=?').run(
+          nowIso(),
+          jobId
+        );
+      } catch (err) {
+        const reason = String(err.message || 'send failed').slice(0, 500);
+        db.prepare(
+          "UPDATE mail_sender_messages SET status='failed', subject=?, message=?, error=? WHERE id=?"
+        ).run(subject, text, reason, msg.id);
+        db.prepare('UPDATE mail_sender_jobs SET failed=failed+1, updated_at=? WHERE id=?').run(
+          nowIso(),
+          jobId
+        );
+
+        // Auth/connection problems affect every remaining message, so pause.
+        const fatal = /EAUTH|ECONNECTION|ETIMEDOUT|ESOCKET|EDNS|not configured|invalid login|535/i.test(
+          reason
+        );
+        if (fatal) {
+          db.prepare(
+            "UPDATE mail_sender_jobs SET status='paused', error=?, updated_at=? WHERE id=?"
+          ).run(reason, nowIso(), jobId);
+          break;
+        }
+      }
+
+      const next = db
+        .prepare("SELECT 1 FROM mail_sender_messages WHERE job_id=? AND status='pending' LIMIT 1")
+        .get(jobId);
+      if (!next) {
+        db.prepare("UPDATE mail_sender_jobs SET status='done', error=NULL, updated_at=? WHERE id=?").run(
+          nowIso(),
+          jobId
+        );
+        break;
+      }
+
+      // Rate limit: delay + small jitter, same idea as the WhatsApp sender.
+      const base = Math.max(5, job.delay_seconds || 45) * 1000;
+      const jitter = Math.floor(Math.random() * 10000);
+      await new Promise((r) => setTimeout(r, base + jitter));
+    }
+  } catch (err) {
+    db.prepare("UPDATE mail_sender_jobs SET status='failed', error=?, updated_at=? WHERE id=?").run(
+      err.message,
+      nowIso(),
+      jobId
+    );
+  } finally {
+    runningMailJobs.delete(jobId);
+  }
+}
+
+app.get('/api/mailsender/status', (_req, res) => {
+  res.json({
+    ...mailer.getSafeConfig(),
+    todaySent: mailSentToday(),
+    defaultDelaySeconds: MAIL_DEFAULT_DELAY,
+    defaultDailyCap: MAIL_DEFAULT_CAP,
+  });
+});
+
+app.post('/api/mailsender/test', async (req, res) => {
+  const to = mailer.normalizeEmail(req.body?.to);
+  if (!to) return res.status(400).json({ error: 'Enter a valid email address.' });
+
+  try {
+    const sent = await mailer.sendMail({
+      to,
+      subject: 'Lead Finder test email',
+      text: 'This is a test email from your Lead Finder app.\n\nIf you received it, your SMTP settings work.',
+    });
+    res.json({ sent: true, to, messageId: sent.messageId });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
+app.get('/api/mailsender/recipients', (req, res) => {
+  const { state = '', city = '', limit = '' } = req.query;
+  const cap = parseInt(limit, 10) || 0;
+  const all = mailBuildRecipients({
+    state: String(state).trim(),
+    city: String(city).trim(),
+  });
+  const selected = cap > 0 ? all.slice(0, cap) : all;
+  res.json({
+    matched: all.length,
+    selected: selected.length,
+    sample: selected.slice(0, 10),
+  });
+});
+
+app.post('/api/mailsender/send', (req, res) => {
+  const body = req.body || {};
+  const subject = String(body.subject || '').trim();
+  const template = String(body.template || '').trim();
+
+  if (subject.length < 2) return res.status(400).json({ error: 'Subject is empty' });
+  if (template.length < 5) return res.status(400).json({ error: 'Message is too short' });
+  if (!mailer.getConfig().configured) {
+    return res.status(409).json({
+      error: 'Email is not configured. Add SMTP settings to backend/.env and restart.',
+    });
+  }
+
+  const active = activeMailJob();
+  if (active) {
+    return res.status(409).json({
+      error: 'A mail campaign is already running. Stop or finish it first.',
+      jobId: active.id,
+    });
+  }
+
+  const delaySeconds = Math.min(
+    600,
+    Math.max(5, parseInt(body.delaySeconds, 10) || MAIL_DEFAULT_DELAY)
+  );
+  const dailyCap = Math.min(500, Math.max(1, parseInt(body.dailyCap, 10) || MAIL_DEFAULT_CAP));
+  const limit = Math.min(2000, Math.max(0, parseInt(body.limit, 10) || 0));
+
+  const recipients = mailBuildRecipients({
+    state: String(body.state || '').trim(),
+    city: String(body.city || '').trim(),
+    limit,
+  });
+
+  if (!recipients.length) {
+    return res.status(400).json({
+      error:
+        'No eligible emails. They may already be contacted, opted out, or the filter matched nothing.',
+    });
+  }
+
+  const jobId = crypto.randomUUID();
+  const now = nowIso();
+  const insertJob = db.prepare(
+    `INSERT INTO mail_sender_jobs (id, subject, template, delay_seconds, daily_cap, total, sent, failed, status, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,0,0,'running',?,?)`
+  );
+  const insertMsg = db.prepare(
+    `INSERT INTO mail_sender_messages (id, job_id, business_name, email, city, state, subject, message, status, created_at)
+     VALUES (?,?,?,?,?,?,?,?, 'pending', ?)`
+  );
+
+  const tx = db.transaction(() => {
+    insertJob.run(jobId, subject, template, delaySeconds, dailyCap, recipients.length, now, now);
+    for (const r of recipients) {
+      insertMsg.run(
+        crypto.randomUUID(),
+        jobId,
+        r.business_name,
+        r.email,
+        r.city,
+        r.state,
+        mailer.renderTemplate(subject, r),
+        mailer.renderTemplate(template, r),
+        now
+      );
+    }
+  });
+  tx();
+
+  runMailJob(jobId).catch((err) => console.error('mail job:', err.message));
+  res.json({ jobId, total: recipients.length, delaySeconds, dailyCap });
+});
+
+app.get('/api/mailsender/jobs', (_req, res) => {
+  res.json(db.prepare('SELECT * FROM mail_sender_jobs ORDER BY created_at DESC LIMIT 25').all());
+});
+
+app.get('/api/mailsender/jobs/:id', (req, res) => {
+  const job = db.prepare('SELECT * FROM mail_sender_jobs WHERE id=?').get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'job not found' });
+
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
+  const counts = db
+    .prepare('SELECT status, COUNT(*) AS c FROM mail_sender_messages WHERE job_id=? GROUP BY status')
+    .all(job.id);
+  const total = db
+    .prepare('SELECT COUNT(*) AS c FROM mail_sender_messages WHERE job_id=?')
+    .get(job.id).c;
+  const messages = db
+    .prepare('SELECT * FROM mail_sender_messages WHERE job_id=? ORDER BY created_at LIMIT ? OFFSET ?')
+    .all(job.id, limit, (page - 1) * limit);
+
+  res.json({
+    job,
+    counts: Object.fromEntries(counts.map((c) => [c.status, c.c])),
+    messages,
+    total,
+    page,
+    limit,
+  });
+});
+
+app.post('/api/mailsender/jobs/:id/stop', (req, res) => {
+  const info = db
+    .prepare(
+      "UPDATE mail_sender_jobs SET status='stopped', updated_at=? WHERE id=? AND status IN ('running','paused')"
+    )
+    .run(nowIso(), req.params.id);
+  res.json({ stopped: info.changes > 0 });
+});
+
+app.post('/api/mailsender/jobs/:id/resume', (req, res) => {
+  const job = db.prepare('SELECT * FROM mail_sender_jobs WHERE id=?').get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'job not found' });
+  if (!mailer.getConfig().configured) {
+    return res.status(409).json({ error: 'Email is not configured. Add SMTP settings first.' });
+  }
+
+  const active = activeMailJob();
+  if (active && active.id !== job.id) {
+    return res.status(409).json({ error: 'Another mail campaign is running', jobId: active.id });
+  }
+
+  db.prepare("UPDATE mail_sender_jobs SET status='running', error=NULL, updated_at=? WHERE id=?").run(
+    nowIso(),
+    job.id
+  );
+  runMailJob(job.id).catch((err) => console.error('mail job:', err.message));
+  res.json({ resumed: true });
+});
+
+app.delete('/api/mailsender/jobs/:id', (req, res) => {
+  db.prepare('DELETE FROM mail_sender_messages WHERE job_id=?').run(req.params.id);
+  db.prepare('DELETE FROM mail_sender_jobs WHERE id=?').run(req.params.id);
+  res.json({ deleted: true });
+});
+
+app.get('/api/mailsender/blacklist', (_req, res) => {
+  res.json(db.prepare('SELECT * FROM mail_sender_blacklist ORDER BY created_at DESC').all());
+});
+
+app.post('/api/mailsender/blacklist', (req, res) => {
+  const email = mailer.normalizeEmail(req.body?.email);
+  if (!email) return res.status(400).json({ error: 'Invalid email address' });
+  db.prepare(
+    'INSERT OR REPLACE INTO mail_sender_blacklist (email, reason, created_at) VALUES (?,?,?)'
+  ).run(email, String(req.body?.reason || '').slice(0, 200), nowIso());
+  res.json({ added: true, email });
+});
+
+app.delete('/api/mailsender/blacklist/:email', (req, res) => {
+  const email = mailer.normalizeEmail(req.params.email);
+  const info = db.prepare('DELETE FROM mail_sender_blacklist WHERE email=?').run(email);
   res.json({ removed: info.changes > 0 });
 });
 
