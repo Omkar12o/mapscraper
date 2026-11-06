@@ -213,6 +213,75 @@ failures pause the campaign so you can fix the settings and press **Resume**. A
 server restart also pauses running campaigns, and any in-flight email is put back
 in the queue.
 
+## SMS Sender (optional, SMS via Fast2SMS or Twilio)
+
+The **SMS Sender** page texts the phone numbers found by **Find Leads** through
+your SMS provider — [Fast2SMS](https://www.fast2sms.com/) (India, default) or
+[Twilio](https://www.twilio.com/) (global). It mirrors the Mail Sender setup:
+configure from the UI, no restart needed.
+
+### Configure SMS in the app (recommended)
+
+1. Open **http://localhost:5173 → SMS Sender**.
+2. Click **Configure SMS** and pick a provider:
+   - **Fast2SMS:** paste your API key from the Fast2SMS dashboard. Optional sender
+     ID (e.g. `TXTIND`) and route (`q`, `v3`, or `dlt` + DLT template ID).
+   - **Twilio:** paste Account SID, Auth Token, and a From number in E.164 form
+     (e.g. `+14155550123`).
+3. Click **Save settings**, then **Send test SMS** to confirm the login.
+4. No restart is needed — the settings take effect immediately.
+
+- Settings are stored in `backend/data/sms-config.json` (mode `0600`, gitignored).
+  Secrets are never returned to the browser and are masked in the UI.
+- **Environment variables win**: `SMS_PROVIDER`, `SMS_COUNTRY_CODE`,
+  `FAST2SMS_API_KEY`, `FAST2SMS_SENDER_ID`, `FAST2SMS_ROUTE`, `FAST2SMS_TEMPLATE_ID`,
+  `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` (see
+  `backend/.env.example`). Useful for Docker.
+
+### Configure SMS with environment variables (optional)
+
+1. Copy the SMS Sender block from `backend/.env.example` into `backend/.env`.
+2. Fill in the Fast2SMS or Twilio variables and restart the backend.
+
+### Usage
+
+1. Open the **SMS Sender** page.
+2. Pick a state (and optionally a city), write a message template, then preview
+   the recipients and start the campaign.
+3. The engine sends with the configured delay + jitter, enforces the daily cap,
+   skips opted-out numbers and already-contacted numbers, and keeps only one
+   active campaign at a time. On failure it records per-recipient errors; auth
+   failures pause the job.
+
+**Template variables:** `{name}`, `{business}`, `{city}`, `{state}`, `{phone}`.
+
+**Safety controls:**
+
+| Control | Default | Notes |
+|---|---|---|
+| Delay between SMS | 15 s | Adds 0–3 s random jitter; minimum 3 s |
+| Daily cap (all campaigns) | 100 | Counted across every campaign for today |
+| Max recipients per campaign | 2000 | Set to a lower number to throttle further |
+| Duplicate protection | on | Skips numbers already sent/pending |
+| Do-not-contact list | on | Skipped by every campaign |
+
+**Troubleshooting:**
+
+| Error | Fix |
+|---|---|
+| `not configured` / `SMS is not configured` | Save provider settings on the SMS Sender page (or set env vars). |
+| `SMS login failed` | Wrong API key / auth token, or exhausted Twilio credits. |
+| DLT / sender ID / template errors | In India, promotional SMS requires DLT registration (entity, sender ID, template). |
+| `provider rate-limited the request` | Lower the daily cap or increase the delay. |
+
+> **Deliverability:** only text businesses you have a legitimate reason to
+> contact, and keep volume low. In India, cold/pro promotional SMS without DLT
+> registration is blocked by carriers. Always include a `Reply STOP to opt out`
+> line and use a dedicated number.
+
+Like the WhatsApp/Mail senders, only one SMS campaign runs at a time and a
+server restart pauses running campaigns; in-flight SMS go back to the queue.
+
 ## Configuration (.env / environment)
 
 | Variable | Default | Description |
@@ -236,6 +305,22 @@ in the queue.
 | MAIL_UNSUBSCRIBE_URL | — | Adds one-click `List-Unsubscribe` header + footer line |
 | MAIL_DELAY_SECONDS | 45 | Default delay between emails |
 | MAIL_DAILY_CAP | 50 | Default daily email cap |
+| SMS_PROVIDER | fast2sms | SMS provider: `fast2sms` or `twilio` |
+| SMS_COUNTRY_CODE | 91 | Default country code for phone numbers |
+| FAST2SMS_API_KEY | — | Fast2SMS API key (empty = SMS disabled) |
+| FAST2SMS_SENDER_ID | — | Fast2SMS sender ID, e.g. `TXTIND` |
+| FAST2SMS_ROUTE | q | Fast2SMS route: `q`, `v3` or `dlt` |
+| FAST2SMS_TEMPLATE_ID | — | DLT template ID (required for route `dlt`) |
+| TWILIO_ACCOUNT_SID | — | Twilio Account SID |
+| TWILIO_AUTH_TOKEN | — | Twilio Auth Token |
+| TWILIO_FROM | — | Twilio From number in E.164, e.g. `+14155550123` |
+| SMS_DELAY_SECONDS | 15 | Default delay between SMS |
+| SMS_DAILY_CAP | 100 | Default daily SMS cap |
+
+> SMS variables are optional: the same settings can be saved from the SMS Sender
+> page into `backend/data/sms-config.json`. When both exist, environment variables
+> win. WhatsApp variables are documented in `backend/.env.example`
+> (`WA_SESSION_DIR`, `WA_DEFAULT_DELAY_SECONDS`, `WA_DAILY_CAP`).
 
 > SMTP variables are optional: the same settings can be saved from the Mail Sender
 > page into `backend/data/mail-config.json`. When both exist, environment variables
@@ -252,6 +337,7 @@ lead-finder/
 │   ├── server.js               # backend: fan-out, poll, clean, SQLite history
 │   ├── whatsapp.js             # Baileys WhatsApp connection + message sender
 │   ├── mailer.js               # SMTP transport for the Mail Sender
+│   ├── sms.js                  # Fast2SMS/Twilio SMS transport for the SMS Sender
 │   ├── providers.cjs           # multi-provider adapters (serper, serpapi, ...)
 │   ├── cities.json             # all Indian states/UTs + major cities
 │   ├── areas.json              # city -> areas mapping

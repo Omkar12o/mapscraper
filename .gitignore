@@ -16,6 +16,7 @@ backend/data/*.db-shm
 backend/data/*.db-wal
 backend/data/wa-session/
 backend/data/mail-config.json
+backend/data/sms-config.json
 *.sqlite
 *.sqlite3
 

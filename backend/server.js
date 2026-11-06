@@ -8,6 +8,7 @@ import ExcelJS from 'exceljs';
 import path from 'node:path';
 import * as wa from './whatsapp.js';
 import * as mailer from './mailer.js';
+import * as sms from './sms.js';
 
 const { Workbook } = ExcelJS;
 
@@ -58,6 +59,7 @@ db.pragma('journal_mode = WAL');
 // SMTP settings saved from the UI live next to the SQLite database
 // (backend/data locally, /data in Docker) and are gitignored.
 mailer.configure(path.dirname(DB_PATH));
+sms.configure(path.dirname(DB_PATH));
 
 // ---------- keyword variants ----------
 const KEYWORD_VARIANTS = {
@@ -322,6 +324,48 @@ try { db.exec('ALTER TABLE mail_jobs ADD COLUMN source TEXT'); } catch (_) {}
     CREATE INDEX IF NOT EXISTS idx_mail_sender_messages_email ON mail_sender_messages(email);
     CREATE TABLE IF NOT EXISTS mail_sender_blacklist (
       email TEXT PRIMARY KEY,
+      reason TEXT,
+      created_at TEXT NOT NULL
+    );
+  `);
+}
+
+// SMS Sender tables.
+{
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sms_jobs (
+      id TEXT PRIMARY KEY,
+      template TEXT NOT NULL,
+      delay_seconds INTEGER DEFAULT 15,
+      daily_cap INTEGER DEFAULT 100,
+      total INTEGER DEFAULT 0,
+      sent INTEGER DEFAULT 0,
+      failed INTEGER DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'running',
+      error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS sms_messages (
+      id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL,
+      name TEXT,
+      phone TEXT NOT NULL,
+      city TEXT,
+      state TEXT,
+      message TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      error TEXT,
+      provider_message_id TEXT,
+      sent_at TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (job_id) REFERENCES sms_jobs(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_sms_messages_job ON sms_messages(job_id);
+    CREATE INDEX IF NOT EXISTS idx_sms_messages_status ON sms_messages(status);
+    CREATE INDEX IF NOT EXISTS idx_sms_messages_phone ON sms_messages(phone);
+    CREATE TABLE IF NOT EXISTS sms_blacklist (
+      phone TEXT PRIMARY KEY,
       reason TEXT,
       created_at TEXT NOT NULL
     );
@@ -3705,6 +3749,441 @@ app.post('/api/mailsender/blacklist', (req, res) => {
 app.delete('/api/mailsender/blacklist/:email', (req, res) => {
   const email = mailer.normalizeEmail(req.params.email);
   const info = db.prepare('DELETE FROM mail_sender_blacklist WHERE email=?').run(email);
+  res.json({ removed: info.changes > 0 });
+});
+
+/* ================================================================== */
+/* SMS Sender (provider API: Fast2SMS / Twilio)                        */
+/* ================================================================== */
+
+const SMS_DEFAULT_DELAY = Math.min(
+  600,
+  Math.max(3, parseInt(process.env.SMS_DELAY_SECONDS || '15', 10) || 15)
+);
+const SMS_DEFAULT_CAP = Math.min(
+  2000,
+  Math.max(1, parseInt(process.env.SMS_DAILY_CAP || '100', 10) || 100)
+);
+
+// Anything left mid-send by a restart goes back in the queue.
+try {
+  db.prepare("UPDATE sms_messages SET status='pending' WHERE status='sending'").run();
+} catch (_) {}
+try {
+  db.prepare(
+    "UPDATE sms_jobs SET status='paused', error='Server restarted - press Resume', updated_at=? WHERE status='running'"
+  ).run(nowIso());
+} catch (_) {}
+
+function smsTodayStartIso() {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString();
+}
+
+function smsSentToday() {
+  return db
+    .prepare("SELECT COUNT(*) AS c FROM sms_messages WHERE status='sent' AND sent_at >= ?")
+    .get(smsTodayStartIso()).c;
+}
+
+function smsBlacklistSet() {
+  const cc = sms.getConfig().countryCode;
+  return new Set(
+    db
+      .prepare('SELECT phone FROM sms_blacklist')
+      .all()
+      .map((r) => sms.normalizePhone(r.phone, cc))
+      .filter(Boolean)
+  );
+}
+
+function smsBuildRecipients({ state, city, limit } = {}) {
+  const where = ["phone IS NOT NULL", "phone <> ''"];
+  const params = [];
+  if (state) {
+    where.push('state = ?');
+    params.push(state);
+  }
+  if (city) {
+    where.push('LOWER(city) = LOWER(?)');
+    params.push(city);
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT phone, MAX(name) AS name, MAX(city) AS city, MAX(state) AS state
+         FROM results
+        WHERE ${where.join(' AND ')}
+        GROUP BY phone
+        ORDER BY MAX(created_at) DESC`
+    )
+    .all(...params);
+
+  const cc = sms.getConfig().countryCode;
+  const blacklist = smsBlacklistSet();
+  const already = new Set(
+    db
+      .prepare("SELECT DISTINCT phone FROM sms_messages WHERE status IN ('sent','pending','sending')")
+      .all()
+      .map((r) => sms.normalizePhone(r.phone, cc))
+      .filter(Boolean)
+  );
+
+  const seen = new Set();
+  const out = [];
+  for (const row of rows) {
+    const phone = sms.normalizePhone(row.phone, cc);
+    if (!phone || phone.length < 10 || phone.length > 15) continue;
+    if (blacklist.has(phone) || already.has(phone) || seen.has(phone)) continue;
+    seen.add(phone);
+    out.push({
+      phone,
+      name: row.name || '',
+      business_name: row.name || '',
+      city: row.city || '',
+      state: row.state || '',
+    });
+    if (limit && out.length >= limit) break;
+  }
+  return out;
+}
+
+function activeSmsJob() {
+  return db
+    .prepare(
+      "SELECT id FROM sms_jobs WHERE status IN ('running','paused') ORDER BY created_at DESC LIMIT 1"
+    )
+    .get();
+}
+
+const runningSmsJobs = new Set();
+
+async function runSmsJob(jobId) {
+  if (runningSmsJobs.has(jobId)) return;
+  runningSmsJobs.add(jobId);
+
+  try {
+    for (;;) {
+      const job = db.prepare('SELECT * FROM sms_jobs WHERE id=?').get(jobId);
+      if (!job || job.status !== 'running') break;
+
+      if (!sms.getConfig().configured) {
+        db.prepare(
+          "UPDATE sms_jobs SET status='paused', error=?, updated_at=? WHERE id=?"
+        ).run('SMS provider is not configured', nowIso(), jobId);
+        break;
+      }
+
+      if (smsSentToday() >= job.daily_cap) {
+        db.prepare(
+          "UPDATE sms_jobs SET status='capped', error=?, updated_at=? WHERE id=?"
+        ).run(`Daily cap of ${job.daily_cap} reached`, nowIso(), jobId);
+        break;
+      }
+
+      const msg = db
+        .prepare(
+          "SELECT * FROM sms_messages WHERE job_id=? AND status='pending' ORDER BY created_at LIMIT 1"
+        )
+        .get(jobId);
+
+      if (!msg) {
+        db.prepare("UPDATE sms_jobs SET status='done', error=NULL, updated_at=? WHERE id=?").run(
+          nowIso(),
+          jobId
+        );
+        break;
+      }
+
+      db.prepare("UPDATE sms_messages SET status='sending' WHERE id=?").run(msg.id);
+
+      const text = sms.renderTemplate(job.template, msg);
+
+      try {
+        const sent = await sms.sendSms({ to: msg.phone, text });
+        db.prepare(
+          "UPDATE sms_messages SET status='sent', provider_message_id=?, sent_at=?, message=?, error=NULL WHERE id=?"
+        ).run(sent.messageId || null, nowIso(), text, msg.id);
+        db.prepare('UPDATE sms_jobs SET sent=sent+1, updated_at=? WHERE id=?').run(nowIso(), jobId);
+      } catch (err) {
+        const rawReason = String(err.message || 'send failed').slice(0, 500);
+        const reason = sms.friendlyError(err).slice(0, 500);
+        db.prepare(
+          "UPDATE sms_messages SET status='failed', message=?, error=? WHERE id=?"
+        ).run(text, reason, msg.id);
+        db.prepare('UPDATE sms_jobs SET failed=failed+1, updated_at=? WHERE id=?').run(
+          nowIso(),
+          jobId
+        );
+
+        // Auth/account problems affect every remaining message, so pause.
+        const fatal =
+          err?.status === 401 ||
+          err?.status === 403 ||
+          /401|403|unauthor|invalid.*(api|auth|token|key)|authentication|not configured/i.test(
+            `${err?.status || ''} ${rawReason}`
+          );
+        if (fatal) {
+          db.prepare("UPDATE sms_jobs SET status='paused', error=?, updated_at=? WHERE id=?").run(
+            reason,
+            nowIso(),
+            jobId
+          );
+          break;
+        }
+      }
+
+      const next = db
+        .prepare("SELECT 1 FROM sms_messages WHERE job_id=? AND status='pending' LIMIT 1")
+        .get(jobId);
+      if (!next) {
+        db.prepare("UPDATE sms_jobs SET status='done', error=NULL, updated_at=? WHERE id=?").run(
+          nowIso(),
+          jobId
+        );
+        break;
+      }
+
+      // Spacing + small jitter to stay well under provider rate limits.
+      const base = Math.max(3, job.delay_seconds || 15) * 1000;
+      const jitter = Math.floor(Math.random() * 3000);
+      await new Promise((r) => setTimeout(r, base + jitter));
+    }
+  } catch (err) {
+    db.prepare("UPDATE sms_jobs SET status='failed', error=?, updated_at=? WHERE id=?").run(
+      String(err.message || 'job failed').slice(0, 500),
+      nowIso(),
+      jobId
+    );
+  } finally {
+    runningSmsJobs.delete(jobId);
+  }
+}
+
+function smsSenderStatus() {
+  return {
+    ...sms.getSafeConfig(),
+    providers: sms.PROVIDERS,
+    todaySent: smsSentToday(),
+    defaultDelaySeconds: SMS_DEFAULT_DELAY,
+    defaultDailyCap: SMS_DEFAULT_CAP,
+  };
+}
+
+app.get('/api/sms/status', (_req, res) => {
+  res.json(smsSenderStatus());
+});
+
+app.post('/api/sms/config', (req, res) => {
+  try {
+    sms.saveConfig(req.body || {});
+    res.json(smsSenderStatus());
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/sms/config', (_req, res) => {
+  sms.clearConfig();
+  res.json(smsSenderStatus());
+});
+
+app.post('/api/sms/test', async (req, res) => {
+  const cfg = sms.getConfig();
+  const phone = sms.normalizePhone(req.body?.to, cfg.countryCode);
+  if (!phone || phone.length < 10 || phone.length > 15) {
+    return res.status(400).json({ error: 'Enter a valid phone number with country code.' });
+  }
+
+  try {
+    const sent = await sms.sendSms({
+      to: req.body?.to,
+      text:
+        String(req.body?.message || '').trim() ||
+        'This is a test SMS from your Lead Finder app. If you received it, your SMS settings work.',
+    });
+    res.json({ sent: true, to: phone, messageId: sent.messageId });
+  } catch (err) {
+    res.status(502).json({ error: sms.friendlyError(err) });
+  }
+});
+
+app.get('/api/sms/recipients', (req, res) => {
+  const { state = '', city = '', limit = '' } = req.query;
+  const cap = parseInt(limit, 10) || 0;
+  const all = smsBuildRecipients({
+    state: String(state).trim(),
+    city: String(city).trim(),
+  });
+  const selected = cap > 0 ? all.slice(0, cap) : all;
+  res.json({
+    matched: all.length,
+    selected: selected.length,
+    sample: selected.slice(0, 10),
+  });
+});
+
+app.post('/api/sms/send', (req, res) => {
+  const body = req.body || {};
+  const template = String(body.template || '').trim();
+
+  if (template.length < 5) return res.status(400).json({ error: 'Message is too short' });
+  if (template.length > 1000) {
+    return res.status(400).json({ error: 'Message is too long (max 1000 characters)' });
+  }
+  if (!sms.getConfig().configured) {
+    return res.status(409).json({
+      error: 'SMS is not configured. Open SMS Sender and save your provider settings first.',
+    });
+  }
+
+  const active = activeSmsJob();
+  if (active) {
+    return res.status(409).json({
+      error: 'An SMS campaign is already running. Stop or finish it first.',
+      jobId: active.id,
+    });
+  }
+
+  const delaySeconds = Math.min(
+    600,
+    Math.max(3, parseInt(body.delaySeconds, 10) || SMS_DEFAULT_DELAY)
+  );
+  const dailyCap = Math.min(
+    2000,
+    Math.max(1, parseInt(body.dailyCap, 10) || SMS_DEFAULT_CAP)
+  );
+  const limit = Math.min(2000, Math.max(0, parseInt(body.limit, 10) || 0));
+
+  const recipients = smsBuildRecipients({
+    state: String(body.state || '').trim(),
+    city: String(body.city || '').trim(),
+    limit,
+  });
+
+  if (!recipients.length) {
+    return res.status(400).json({
+      error:
+        'No eligible numbers. They may already be contacted, opted out, or the filter matched nothing.',
+    });
+  }
+
+  const jobId = crypto.randomUUID();
+  const now = nowIso();
+  const insertJob = db.prepare(
+    `INSERT INTO sms_jobs (id, template, delay_seconds, daily_cap, total, sent, failed, status, created_at, updated_at)
+     VALUES (?,?,?,?,?,0,0,'running',?,?)`
+  );
+  const insertMsg = db.prepare(
+    `INSERT INTO sms_messages (id, job_id, name, phone, city, state, message, status, created_at)
+     VALUES (?,?,?,?,?,?,?, 'pending', ?)`
+  );
+
+  const tx = db.transaction(() => {
+    insertJob.run(jobId, template, delaySeconds, dailyCap, recipients.length, now, now);
+    for (const r of recipients) {
+      insertMsg.run(
+        crypto.randomUUID(),
+        jobId,
+        r.name,
+        r.phone,
+        r.city,
+        r.state,
+        sms.renderTemplate(template, r),
+        now
+      );
+    }
+  });
+  tx();
+
+  runSmsJob(jobId).catch((err) => console.error('sms job:', err.message));
+  res.json({ jobId, total: recipients.length, delaySeconds, dailyCap });
+});
+
+app.get('/api/sms/jobs', (_req, res) => {
+  res.json(db.prepare('SELECT * FROM sms_jobs ORDER BY created_at DESC LIMIT 25').all());
+});
+
+app.get('/api/sms/jobs/:id', (req, res) => {
+  const job = db.prepare('SELECT * FROM sms_jobs WHERE id=?').get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'job not found' });
+
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
+  const counts = db
+    .prepare('SELECT status, COUNT(*) AS c FROM sms_messages WHERE job_id=? GROUP BY status')
+    .all(job.id);
+  const total = db
+    .prepare('SELECT COUNT(*) AS c FROM sms_messages WHERE job_id=?')
+    .get(job.id).c;
+  const messages = db
+    .prepare('SELECT * FROM sms_messages WHERE job_id=? ORDER BY created_at LIMIT ? OFFSET ?')
+    .all(job.id, limit, (page - 1) * limit);
+
+  res.json({
+    job,
+    counts: Object.fromEntries(counts.map((c) => [c.status, c.c])),
+    messages,
+    total,
+    page,
+    limit,
+  });
+});
+
+app.post('/api/sms/jobs/:id/stop', (req, res) => {
+  const info = db
+    .prepare(
+      "UPDATE sms_jobs SET status='stopped', updated_at=? WHERE id=? AND status IN ('running','paused')"
+    )
+    .run(nowIso(), req.params.id);
+  res.json({ stopped: info.changes > 0 });
+});
+
+app.post('/api/sms/jobs/:id/resume', (req, res) => {
+  const job = db.prepare('SELECT * FROM sms_jobs WHERE id=?').get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'job not found' });
+  if (!sms.getConfig().configured) {
+    return res.status(409).json({ error: 'SMS is not configured. Add provider settings first.' });
+  }
+
+  const active = activeSmsJob();
+  if (active && active.id !== job.id) {
+    return res.status(409).json({ error: 'Another SMS campaign is running', jobId: active.id });
+  }
+
+  db.prepare("UPDATE sms_jobs SET status='running', error=NULL, updated_at=? WHERE id=?").run(
+    nowIso(),
+    job.id
+  );
+  runSmsJob(job.id).catch((err) => console.error('sms job:', err.message));
+  res.json({ resumed: true });
+});
+
+app.delete('/api/sms/jobs/:id', (req, res) => {
+  db.prepare('DELETE FROM sms_messages WHERE job_id=?').run(req.params.id);
+  db.prepare('DELETE FROM sms_jobs WHERE id=?').run(req.params.id);
+  res.json({ deleted: true });
+});
+
+app.get('/api/sms/blacklist', (_req, res) => {
+  res.json(db.prepare('SELECT * FROM sms_blacklist ORDER BY created_at DESC').all());
+});
+
+app.post('/api/sms/blacklist', (req, res) => {
+  const phone = sms.normalizePhone(req.body?.phone, sms.getConfig().countryCode);
+  if (!phone || phone.length < 10) return res.status(400).json({ error: 'Invalid phone number' });
+  db.prepare('INSERT OR REPLACE INTO sms_blacklist (phone, reason, created_at) VALUES (?,?,?)').run(
+    phone,
+    String(req.body?.reason || '').slice(0, 200),
+    nowIso()
+  );
+  res.json({ added: true, phone });
+});
+
+app.delete('/api/sms/blacklist/:phone', (req, res) => {
+  const phone = sms.normalizePhone(req.params.phone, sms.getConfig().countryCode);
+  const info = db.prepare('DELETE FROM sms_blacklist WHERE phone=?').run(phone);
   res.json({ removed: info.changes > 0 });
 });
 

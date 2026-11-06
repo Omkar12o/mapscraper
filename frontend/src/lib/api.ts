@@ -300,4 +300,51 @@ export const api = {
     request('/mailsender/blacklist', { method: 'POST', body: JSON.stringify({ email, reason }) }),
   removeMailSenderBlacklist: (email: string) =>
     request(`/mailsender/blacklist/${encodeURIComponent(email)}`, { method: 'DELETE' }),
+
+  // SMS sender (Fast2SMS / Twilio)
+  getSmsStatus: (): Promise<any> => request('/sms/status'),
+  saveSmsConfig: (body: {
+    provider: 'fast2sms' | 'twilio';
+    countryCode?: string;
+    apiKey?: string;
+    senderId?: string;
+    route?: string;
+    templateId?: string;
+    accountSid?: string;
+    authToken?: string;
+    from?: string;
+  }): Promise<any> => request('/sms/config', { method: 'POST', body: JSON.stringify(body) }),
+  clearSmsConfig: (): Promise<any> => request('/sms/config', { method: 'DELETE' }),
+  testSms: (to: string, message?: string): Promise<{ sent: boolean; to: string; messageId: string }> =>
+    request('/sms/test', { method: 'POST', body: JSON.stringify({ to, message }) }),
+  previewSmsRecipients: (opts: { state?: string; city?: string; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (opts.state) params.set('state', opts.state);
+    if (opts.city) params.set('city', opts.city);
+    if (opts.limit) params.set('limit', String(opts.limit));
+    return request(`/sms/recipients?${params.toString()}`);
+  },
+  startSmsCampaign: (body: {
+    template: string;
+    state?: string;
+    city?: string;
+    delaySeconds?: number;
+    dailyCap?: number;
+    limit?: number;
+  }): Promise<{ jobId: string; total: number }> =>
+    request('/sms/send', { method: 'POST', body: JSON.stringify(body) }),
+  listSmsJobs: (): Promise<any[]> => request('/sms/jobs'),
+  getSmsJob: (jobId: string, page = 1, limit = 50): Promise<any> =>
+    request(`/sms/jobs/${encodeURIComponent(jobId)}?page=${page}&limit=${limit}`),
+  stopSmsJob: (jobId: string): Promise<{ stopped: boolean }> =>
+    request(`/sms/jobs/${encodeURIComponent(jobId)}/stop`, { method: 'POST' }),
+  resumeSmsJob: (jobId: string): Promise<{ resumed: boolean }> =>
+    request(`/sms/jobs/${encodeURIComponent(jobId)}/resume`, { method: 'POST' }),
+  deleteSmsJob: (jobId: string) =>
+    request(`/sms/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' }),
+  getSmsBlacklist: (): Promise<any[]> => request('/sms/blacklist'),
+  addSmsBlacklist: (phone: string, reason?: string) =>
+    request('/sms/blacklist', { method: 'POST', body: JSON.stringify({ phone, reason }) }),
+  removeSmsBlacklist: (phone: string) =>
+    request(`/sms/blacklist/${encodeURIComponent(phone)}`, { method: 'DELETE' }),
 };

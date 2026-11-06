@@ -13,6 +13,7 @@ import { SavedListsPage } from './pages/SavedListsPage';
 import { MailFinderPage } from './pages/MailFinderPage';
 import { MailSenderPage } from './pages/MailSenderPage';
 import { WhatsAppPage } from './pages/WhatsAppPage';
+import { SmsSenderPage } from './pages/SmsSenderPage';
 
 export default function App() {
   const [page, setPage] = useState<PageKey>('dashboard');
@@ -53,6 +54,7 @@ export default function App() {
       {page === 'mailfinder' && <MailFinderPage />}
       {page === 'mailsender' && <MailSenderPage />}
       {page === 'whatsapp' && <WhatsAppPage />}
+      {page === 'smssender' && <SmsSenderPage />}
       {page === 'database' && <LeadDatabasePage />}
       {page === 'saved' && <SavedListsPage />}
       {page === 'history' && (

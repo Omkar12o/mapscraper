@@ -45,6 +45,18 @@ services:
       - MAIL_UNSUBSCRIBE_URL=${MAIL_UNSUBSCRIBE_URL:-}
       - MAIL_DELAY_SECONDS=${MAIL_DELAY_SECONDS:-45}
       - MAIL_DAILY_CAP=${MAIL_DAILY_CAP:-50}
+      # SMS Sender (optional) — set these in a root .env file for Docker.
+      - SMS_PROVIDER=${SMS_PROVIDER:-}
+      - SMS_COUNTRY_CODE=${SMS_COUNTRY_CODE:-91}
+      - FAST2SMS_API_KEY=${FAST2SMS_API_KEY:-}
+      - FAST2SMS_SENDER_ID=${FAST2SMS_SENDER_ID:-}
+      - FAST2SMS_ROUTE=${FAST2SMS_ROUTE:-q}
+      - FAST2SMS_TEMPLATE_ID=${FAST2SMS_TEMPLATE_ID:-}
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID:-}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN:-}
+      - TWILIO_FROM=${TWILIO_FROM:-}
+      - SMS_DELAY_SECONDS=${SMS_DELAY_SECONDS:-15}
+      - SMS_DAILY_CAP=${SMS_DAILY_CAP:-100}
     volumes:
       - leadfinder-data:/data
     depends_on:
