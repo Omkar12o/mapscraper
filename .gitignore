@@ -19,7 +19,7 @@ backend/data/*.db-wal
 
 # Logs
 *.log
-server_output.txt
+server_*.txt
 
 # Temporary debug scripts and exports
 backend/test_*.cjs
