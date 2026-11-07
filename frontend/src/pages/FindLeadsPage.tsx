@@ -53,6 +53,7 @@ const QUICK_PICKS = [
   'Business person',
   'Enterprise',
   'Pvt Ltd',
+  'CSR',
 ];
 const RESULT_OPTIONS = ['All available', '500', '1000', '3000', '5000'];
 const TERMINAL_STATUSES = ['done', 'failed', 'stopped'];
